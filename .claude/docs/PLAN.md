@@ -128,7 +128,7 @@
 
 단위를 끝낼 때마다 이 소절을 덮어쓴다. 재현 가능한 사실만 적고, 진행 체크는 위 목록이 정본이다.
 
-- **상태(2026-10-11)**: 5단계 완료(`v0.5.0`): M37~M42b(M42b는 부분 합격, §53)와 M43. 다음 단계는 사용자가 정한다(후보: 반복 검색·사람 승인 후 재개 등 LangGraph 재비교 조건, 분류 재도전, 클라우드 LLM opt-in). 서버·컨테이너·임시 볼륨·n8n은 모두 내려 있고 `ollama serve`만 원래대로 떠 있다. 새 Slack 앱은 사용자의 워크스페이스에 설치된 채로 남아 있고 `.env`는 새 앱 토큰으로 바뀌어 있다(기존 앱은 별개). 사용자의 기존 로컬 Postgres 볼륨(`slack-lab_postgres-data`)은 V1 체크섬 불일치로 현재 코드와 맞지 않으니 평소 개발에 쓰려면 백업 후 초기화가 필요하다(M25 안내).
+- **상태(2026-10-11)**: 5단계 완료(`v0.5.0`): M37~M42b(M42b는 부분 합격, §53)와 M43. 다음 단계는 사용자가 정한다(후보: 반복 검색·사람 승인 후 재개 등 LangGraph 재비교 조건, 분류 재도전, 클라우드 LLM opt-in). 서버·컨테이너·임시 볼륨·n8n은 모두 내려 있고 `ollama serve`만 원래대로 떠 있다. 새 Slack 앱은 사용자의 워크스페이스에 설치된 채로 남아 있고 `.env`는 새 앱 토큰으로 바뀌어 있다(기존 앱은 별개). 사용자의 기존 로컬 Postgres 볼륨(`slack-lab_postgres-data`)은 V1 체크섬 불일치였으므로 2026-10-11 사용자 요청으로 저장소 밖에 `pg_dump` 백업 후 삭제했다(`docker compose up -d postgres`가 새 볼륨으로 Flyway를 처음부터 적용한다). RabbitMQ·Redis 볼륨은 그대로다.
 - 실행: `docker compose up -d rabbitmq postgres`(.env에 `POSTGRES_PASSWORD`) + 호스트 `bootRun`, 또는 `docker compose --profile app up --build`. 호스트 8080을 옛 `bootRun`(Redis 시절 코드)이 점유하고 있을 수 있다 — 컨테이너는 `RECEIVER_PORT=18080`으로 띄웠다.
 - 부하·실험은 노트북 부담이 크다(Docker + Ollama 약 8GB). 개발 중 검증은 가볍게, 전체 스택·LLM 실험은 마일스톤 끝에 한 번만 하고 바로 내린다(`docker compose down --remove-orphans`, `ollama stop qwen2.5:7b`).
 - M22 실측: 순차 20건 수신 p95 71ms·답변 p95 6.4s, 버스트 수신 p95 129ms, D1~D3 중복 0, R1~R3 통과(R2 인수 64초, R3 자동 조회 완료). 언어 방어가 실제로 작동해 일부 질문은 재시도 뒤 실패 안내로 끝난다(§21).
