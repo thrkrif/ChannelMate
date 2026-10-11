@@ -1258,3 +1258,112 @@ Codex 독립 판정(TAG-AFTER-CHECKS)이 요구한 ①알람형 Slack 왕복 ②
 - **적용**: 이 프롬프트는 C2·tuning 모두 develop 프롬프트(52/60, 25/30)보다 낫고 분류가 기본 꺼짐이라(`classification.enabled=false`) 기본 동작은 3단계 그대로이므로 PR #74로 병합한다. **종료 방식은 사용자 몫**: 사전 합의대로면 분류를 기본 비활성으로 4단계를 닫는다(이미 기본값). 켜서 쓰는 사용자는 정보 부족 정확도(13/20)와 사고형 장애 1~2건 누락 위험을 알고 써야 한다.
 - 한계: final을 세 번 봤고(첫 관찰은 §44) 조정 세트 점수는 낙관적이다. 표본이 작아 F-M10 같은 1건 차이는 노이즈 범위다.
 
+## 47. 5단계 M37 `metric=rag_result` 한 줄과 iCloud 중복 점검 (2026-10-09)
+
+**조건**: Apple M1 16GB, Java 21, `develop` c7ac6ce 기준 브랜치. 외부 왕복은 M42에서 한다(이 단계는 단위·빌드 검증만).
+
+- **iCloud 중복 점검**: `src/` 아래 빈 `"… 2"` 디렉터리 12개(main 2·test 10), `scripts/`에 `rag-index 2`·`rag-index 3`·`alert-roundtrip 2` 사본. 디렉터리 안 파일 0개, `src/`의 `.java` 사본 0개, 모두 `.gitignore`(`* [0-9]`)가 무시한다. 컴파일·`./gradlew build`에 섞이지 않아 삭제하지 않았다(삭제는 사용자 확인 대상).
+- **변경**: `RetrievalService.retrieve()`의 switch 식을 지역 변수로 받고 `try/finally`에서 호출당 정확히 1줄을 기록한다. unavailable은 `reason=<오류 코드 이름>`만 붙인다(`select()` 예외·`rank()` 밖 예외도 `unexpected_exception`으로 남기고 예외는 그대로 전파).
+- **단위 `RetrievalServiceMetricTest` 8건**: found·none(임계값 미달)·none(빈 질의)·unavailable(예산 없음)·unavailable 4종(임베딩 타임아웃·실패, 저장소 타임아웃·실패)과 예상 못한 예외 각각 줄 정확히 1개, `rank()` 직접 호출 0줄, 줄에 질문·문서 제목·예외 메시지 노출 0.
+- **C5**: `./gradlew build` 통과 — 테스트 522건, 실패 0·오류 0·건너뜀 2. 기존 테스트 파일은 수정하지 않았고(새 파일 1개만 추가) `ArchitectureTest` 6건 통과.
+- **한계**: 로그 줄이 실제 Slack 왕복·시도 반복에서 기대 줄 수 표와 맞는지는 M42 외부 왕복에서 판정한다.
+
+## 48. 5단계 M38 `scripts/p1-metrics` 시간 구간·6개 지표 (2026-10-09)
+
+**조건**: Python 3.11.7(표준 라이브러리만), 합성 로그 픽스처. 외부 왕복은 M42에서 한다.
+
+- **로그 형식 확인**: Spring Boot 기본 줄 머리 `2026-10-09T17:23:34.584+09:00  INFO …`(ISO-8601 + 오프셋)을 실제 `./gradlew build` 로그로 확인해 픽스처에 박았다. `Z`와 `±HH:MM`을 모두 `datetime.fromisoformat`로 파싱하고 UTC로 비교한다.
+- **변경**: `--since <5m|300s|2h|1d|ISO>`·`--now <ISO>` 추가. 옵션이 없으면 기존 출력 그대로다(수정 전 스크립트가 낸 출력을 골든으로 박아 바이트 단위 비교). 구간 모드는 ① 최신 적체 스냅샷(시각·n초 전·누락 키 `-`·30초 초과 stale 경고) ② 큐 대기 ③ LLM 시도 시리즈(llm_ms ≥ 0인 모든 시도) ④ 답변 시간 ⑤ 시도·이벤트 단위 결과 분포 ⑥ `metric=rag_result` 줄만 센 RAG 분포(0줄은 "장애 아님"으로 구분)를 낸다.
+- **결함 수정**: 키가 빠진 부분 스냅샷(`BacklogReporter`는 일부 조회가 실패하면 키를 빼고 쓴다)에서 레거시 모드가 `KeyError`로 죽던 것을 고쳤다. 숫자 자리에 쓰레기가 든 줄은 "형식 오류로 건너뜀"으로 세고 집계를 멈추지 않는다.
+- **한계**: 예산 소진처럼 호출 없이 약 0ms로 기록된 시도와 빠른 실제 실패(연결 거부)를 로그만으로 구분할 수 없어 ③은 0ms 시도도 센다(구분하려면 Java 변경이 필요하며 5단계 비목표). 구간 경계에 걸친 이벤트는 "구간 안 마지막 줄"로 센다.
+- **단위 `python3 scripts/test_p1_metrics.py` 23건 통과**: 기존 출력 골든 일치, 구간 경계(직전·직후·시작·끝)·`Z`/`+09:00` 혼재, 시각 없는 줄 귀속(직전 줄·파일 첫머리), 부분 스냅샷, stale 31초 경고·29초 비경고, `llm_ms=0` 포함·`-1` 제외, S2 형태(시도 4줄 → 이벤트 1), 기존 `RAG 검색 result=` 줄 무시, 장애 사유 표시, event_id·attempt_id 출력 0건, 깨진 타임스탬프·빈 입력·`negative_interval=true`·숫자 쓰레기·잘못된 옵션.
+- **판정**: C4(출력의 금지 정보 0건)의 스크립트 쪽 단위는 통과했고, C1·C2·C3의 실측 판정은 M42 외부 왕복에서 한다.
+
+## 49. 5단계 M39 `scripts/env-check` (2026-10-09)
+
+**조건**: Python 3.11.7(표준 라이브러리만), 합성 env 파일. Spring 기동 검증은 하지 않는다(기동 때 Spring이 거부하는 흔한 실수를 앞당겨 보여주는 도구다).
+
+- **규칙(코드 근거)**: 필수 5키 비공백. `RAG_ENABLED`면 모델·차원(양의 정수), 임베딩/LLM 호스트가 허용 목록 밖이면 `RAG_ALLOW_EXTERNAL_*` 필요(`RagGuard`와 같은 호스트 파싱·`*.` 접미사·IPv4 CIDR, `localhost.evil.com`·`http://localhost@evil.com` 거부). `RAG_ALLOWEDHOSTS`가 있으면 기본 목록을 **대신**한다(Spring 목록 바인딩은 덮어쓰기). `RAG_DOCS_DIR`는 `--index`일 때만 필수(존재·저장소 밖). `ALERT_SECRET`·`ALERT_CHANNEL`은 둘 다 채우거나 둘 다 비움(`AlertProperties`). `CLASSIFICATION_ENABLED`면 `CLASSIFICATION_MODEL` 필요, echo 클라이언트와 함께 못 쓴다. 명시한 빈 URL·잘못된 boolean은 오류, 생략은 기본값.
+- **판단**: 빈 boolean(`RAG_ENABLED=`)은 Spring이 어떻게 바인딩할지 확인하지 못해 보수적으로 오류로 센다("키를 지운다"). `RAG_ALLOWEDHOSTS`가 환경변수로 실제 바인딩되는지는 M42 기동 한 번으로 확인한다(안 되면 env-check 출력에 "기본 목록 기준" 표시로 낮춘다).
+- **단위 `python3 scripts/test_env_check.py` 47건 통과**: 정상 구성 exit 0, 오류 유도 3종(필수값 누락 / RAG 조합 오류 / 알람 한쪽 누락) 각 exit 1과 해당 키 이름, 필수 5키 각각, 빈 URL·잘못된/빈 boolean·분류 모델·echo 조합, 외부 호스트 허용·거부, 호스트 우회 시도, 와일드카드·CIDR·`RAG_ALLOWEDHOSTS` 대체, `--index` 경로 규칙, 파일 없음 exit 1·알 수 없는 옵션 exit 2, 오류가 겹쳐도 stdout·stderr에 픽스처 비밀값 4종 0건.
+- **실제 `.env` 1회 실행**: exit 0(출력은 커밋하지 않음).
+- **판정**: C10 단위 통과. 비밀값 출력 0건 확인.
+
+## 50. 5단계 M40 Slack App Manifest와 설치 가이드 (2026-10-09)
+
+**조건**: 정적 검증만(Slack 화면 조작·실제 앱 생성은 M42b 사람 단계). 외부 호출 없음.
+
+- **산출물**: `docs/slack-app-manifest.json`, `docs/SETUP.md`(앱 생성 → 설치 → 토큰 입력·`env-check` → 기동 → URL 검증 → 채널 초대, 막혔을 때 표, 앱 교체 절차), `README.md`(소개와 링크).
+- **코드 근거 대조**: `src/main`·`scripts`에서 추출한 Slack 메서드는 `chat.postMessage`·`reactions.add`·`conversations.replies`·`conversations.history`·`auth.test` 5개다. 필요 스코프는 `chat:write`·`reactions:write`·`channels:history`(둘 다)이고 `auth.test`는 스코프가 필요 없다. 이벤트 수신에 `app_mentions:read`가 필요해 선언 스코프는 4개로 일치한다.
+- **계획 변경(Request URL)**: 계획은 "Request URL을 Manifest에서 생략"이었다. 그러나 Slack 문서의 검증 오류 예시에 "Event Subscription requires either Request URL or Socket Mode Enabled"가 있어, `request_url` 없이 `bot_events`만 두면 거부될 가능성이 높다. 속성 레퍼런스상 `request_url`은 선택이고 "설정하면 앱 설정에서 직접 Verify해야 한다"고 한다. 이벤트 선언을 아예 빼면 설치 자동화가 없애려던 "구독 누락 → 무응답" 마찰이 되살아나므로, **`bot_events: [app_mention]`은 유지하고 `request_url`은 자리표시자(`https://your-ngrok-host.example.com/slack/events`)로 두었다.** 가이드 4단계에서 실제 터널 주소로 바꾸고 Verified를 확인한다. 테스트가 `*.example.com` 밖의 주소를 막아 실제 터널 주소가 공개 저장소에 커밋되지 않게 한다.
+- **미확인(M42b)**: Slack이 자리표시자 URL이 든 Manifest를 실제로 받아들이는지는 사람 단계에서만 확인할 수 있다. 거부되면 가이드 1단계의 우회(이벤트 구독 블록을 지우고 생성 뒤 화면에서 켠다)를 쓰고 Manifest와 가이드를 고친다.
+- **단위 `python3 scripts/test_manifest.py` 10건 통과**: JSON 파싱·필수 필드, 코드의 메서드가 모두 표에 있음, 추출기 회귀 방지(알려진 5개 모두 발견), 스코프·이벤트·URL 일치, 오류 유도 6종(스코프를 뺀 사본·안 쓰는 스코프를 더한 사본·이벤트를 더한 사본·실제 터널 주소가 든 사본·소켓 모드 사본·새 메서드 출현)이 각각 실패.
+- **판정**: C11 단위 통과. C12(Manifest로 만든 새 앱에서 멘션 → 답글 1 + 👀 1)는 M42b 사람 단계에서 판정한다.
+
+## 51. 5단계 M41 n8n 예제 워크플로와 본문 동일성 검사 (2026-10-09)
+
+**조건**: Apple M1 16GB, Docker Desktop. n8n 컨테이너만 검증 때 띄움(메모리 상한 1GiB·CPU 1, 검증 전용 볼륨), 수신 서버·Ollama·실제 Slack 없음. 가짜 수신 서버(호스트 파이썬 스텁)와 더미 Credential을 썼고 저장소에는 아무것도 남기지 않았다.
+
+- **이미지 고정**: `n8nio/n8n:2.42.6@sha256:526daa38b68e923cc00c5280d18b4da5d489f115a73bdbf3b8e452b184197a9a`. `stable` 태그가 가리키는 버전을 확인한 뒤 같은 digest의 버전 태그가 존재함을 `docker pull`로 확인해 고정했다. 이 버전이 지원하는 노드 버전은 HTTP Request 4.5(기본)·Code 2·Manual Trigger 1이다.
+- **import/export**: `n8n import:workflow` 성공(CLI import는 최상위 `id`가 필요 — 없으면 `workflow_entity.id NOT NULL` 오류). export한 노드·연결·설정이 저장소 JSON과 완전히 같다(export는 시각·버전 필드만 더한다).
+- **실행 스모크(n8n 2.42.6, CLI `execute`)**: 정상 Credential로 스텁이 **정확히 4건**(`/alerts/cloudwatch`, `Content-Type: application/json`, `X-Alert-Secret` 일치) 받았고, 서로 다른 본문 수 1, 바깥 키 `Type·MessageId·Message`, `Message` 안 키 8개와 `Trigger` 하위 필드가 `alert-roundtrip`과 같다.
+- **잘못된 Credential**: 계획은 "n8n HTTP Request는 첫 4xx에서 멈춘다"고 추정했으나 이 버전은 **4건 모두 보낸 뒤 실행을 실패로 끝냈고 4건 모두 401**을 받았다. 스펙의 "401·리포트 0개"와는 모순되지 않는다(판정은 401 1줄 이상·발행 0줄·리포트 0개로 유지). 이 관찰은 CLI 실행 기준이며 UI 실행은 M42b에서 확인한다.
+- **CLI 실행 주의**: 서버가 떠 있는 컨테이너에서 `n8n execute`를 쓰면 태스크 브로커 포트 충돌이 난다 → `N8N_RUNNERS_BROKER_PORT`·`N8N_PORT`를 바꿔 실행했다. 이는 스모크 도구일 뿐 사람 단계의 근거가 아니다(UI 실행이 정본).
+- **정리**: 컨테이너·볼륨·스텁 포트 모두 0(확인함).
+- **단위 `python3 scripts/test_n8n_example.py` 37건 통과**(외부 호출 0): 노드 3종·연결 순서·HTTP 계약·Credential/시크릿 패턴/실제 `.env` 비밀값 0건(값 미출력), 고정 입력·시각에서 `alert-roundtrip`(수정 없음, `exec`+`datetime`·`clock` 교체+`send_fn` 500)과 호스트 `node`로 실행한 Code 노드 본문의 필드·값 불일치 0·재전송 간 차이 0·`Message`가 문자열임·입력 없을 때 시각 형식, `n8n-watch` 판정(expect 1: 10초·179초 합격 / 181초·2개·실패 안내·없음·다른 알람 불합격 / 발행 줄 없음 종료 2, expect 0: 합격과 불합격 3종·관찰 시작 이전 401 무시), Slack 오류 종료 3, `ALERT_CHANNEL`·토큰 없음 거부, 상태 파일 저장소 밖 강제, 출력에 event_id·채널 ID·토큰 0.
+- **한계**: 호스트 `node`와 n8n 안의 Code 실행기가 다를 수 있어 실제 실행 본문과의 대조는 M42b(`n8n-watch`의 리포트 1개 판정)에서 한다. 실제 UI의 Credential 입력·Import는 사람 단계다.
+- **판정**: C8·C9 단위 통과(C9의 컨테이너·볼륨 제거는 스모크에서 확인). C6·C7은 M42b에서 판정한다.
+
+## 52. 5단계 M42 자동 통합 실측 (2026-10-09)
+
+**검증 환경**: Apple M1 16GB, macOS 26.6.1, Docker 27.3.1, Ollama 0.34.0(`ollama serve`는 실측 전부터 실행 중), Java 21.0.9, `develop` 3d6a715 기준. 호스트 `bootRun`(역할 `all`) + RabbitMQ·Postgres(`pgvector/pgvector:pg16`) 컨테이너, 분류 off, RAG on(가상 문서 20개를 저장소 밖 임시 경로로 복사해 `scripts/rag-index --rebuild --confirm-delete`로 재색인 → 20개 추가), 임베딩 `bge-m3`(1024차원). **검증 설정으로 `LLM_MODEL=qwen2.5:3b`를 `.env`의 `qwen2.5:7b` 위에 덮어썼다**(3단계 권장 기본, 지연이 짧음). 재시도는 기본값(5·30·120초). 로그는 시나리오마다 새 파일(저장소 밖), 각 시나리오 직후 `scripts/p1-metrics --since 5m`. event_id·채널 ID는 기록하지 않는다.
+
+### 시나리오별 결과 vs 기대 줄 수 표 (C1·C3)
+| 시나리오 | 처리 지표(시도) | 이벤트 단위 | `rag_result` | LLM 시도 n(③) | `answer_ms` n(④) | 기타 |
+|---|---|---|---|---|---|---|
+| **S1 정상 5건**(tuning 멘션 5개) | 정상 답변 5 ✓ | 정상 5 ✓ | 5 = found 4 + none 1 ✓ | 5 ✓ | 5 ✓ | 반응 성공 5 ✓, 시작→끝 44초(<5분) ✓, 참고 문서 4·근거 없음 안내 1 |
+| **S2 LLM 실패 1건** | 재시도 요청 3 + 실패 안내 1 = 4 ✓ | 실패 안내 1 ✓ | 4 = found 4 ✓(시도마다 검색) | 4 ✓(각 1ms, 연결 거부) | 0 ✓ | 웜업 실패 로그 1(`LLM 웜업 결과=Failed`) ✓, 전체 165초(첫 재시도 +9.6s·+44.6s·+165.3s) |
+| **S3 RAG 장애 1건** | 정상 답변 1 ✓ | 정상 1 ✓ | unavailable 1(`embedding_connect_failed`) ✓ | 1 ✓ | 1 ✓ | 답글에 "문서 검색을 완료하지 못해 일반 지식으로 답변합니다…" 부착 ✓ |
+| **S4 전송 결과 불명 1건** | 결과 불명 1(kind=-) ✓ | 결과 불명 1 ✓ | 1 = found ✓ | 1 ✓ | 0 ✓ | 반응 실패 1 ✓, 스텁의 `/chat.postMessage` 접속 **1회**(자동 재발신 0) ✓, 스냅샷 `recovery=1` ✓ |
+
+- **C1 합격**: 4개 시나리오 모두 기대 줄 수와 오차 0(시도·이벤트 단위). **C3 합격**: `rag_result` 합계 11줄 = S1~S4의 `retrieve()` 호출 5+4+1+1, found 9·none 1·unavailable 1(각 1회 이상). **C2 합격**: 최신 스냅샷 경과 S1 0초·S2 4초·S3 4초·S4 5초(≤30).
+- **C4 합격**: `metric=rag_result` 11줄과 `p1-metrics` 출력 5개에서 질문 원문(60개)·문서 제목(20개)·시크릿(3종)·event_id/attempt_id 패턴 노출 **0건**, 줄 형식 이탈 0. **C5**: M42는 코드 변경이 없고 M37~M41의 단위·전체 빌드(522건) 결과가 유효하다.
+- **S1 지연(참고)**: `answer_ms` p50 5.7s·p95 8.1s, LLM 시도 p95 7.5s, 큐 대기 p95 76ms, 반응 p95 657ms, 왕복 스크립트 기준 p50 8.0s·p95 9.7s.
+- **S0 `RAG_ALLOWEDHOSTS` 바인딩 확인(M39에서 이월)**: `RAG_ALLOWEDHOSTS=ollama.invalid`로 기동하면 "rag.embedding-base-url 호스트 'localhost'가 rag.allowed-hosts에 없다 …"로 **기동이 거부**된다 → 환경변수가 기본 목록을 대신하도록 실제 바인딩된다(`env-check`의 대체 규칙이 맞다). `LLM_BASE_URL`·`LLM_VERIFYMODELONSTARTUP`·`RAG_EMBEDDING_BASE_URL`·`SLACK_BASEURL` 덮어쓰기도 시나리오에서 의도대로 동작했다.
+
+### 계획과 달랐던 점
+- **기존 Postgres 볼륨 사용 불가**: 사용자의 기존 로컬 볼륨(`slack-lab_postgres-data`)에는 `Migration checksum mismatch for migration version 1`로 Flyway 검증이 실패했다. V1이 2026-10-03(M24 오류 모델 정리)에 수정되어, 그 전에 만들어진 볼륨의 체크섬과 다르다(3단계 M25의 "기존 볼륨은 백업 후 초기화" 상태). **삭제·repair하지 않고** 별도 compose 프로젝트(`slack-lab-m42`)의 새 볼륨으로 실측했으며, 끝난 뒤 그 프로젝트의 컨테이너·볼륨만 제거했다. 기존 `slack-lab_*` 볼륨 3개는 그대로다.
+- **S1 첫 시도 무효**: 배치 인자를 `set=tuning`으로 잘못 넘겨(위치 인자 `tuning mention`이 맞다) 질문 0건이었다. 같은 환경에서 새 로그 파일(`S1r`)로 다시 돌린 결과만 판정에 썼다.
+- **S4 정리**: 계획의 "실제 Slack으로 재기동" 단계는 생략했다. `scripts/recovery`가 별도 프로세스로 실제 Slack을 직접 조회하므로 앱 재기동이 필요 없다. `list`(UNKNOWN 1건) → `check`("답글 없음(스레드 전체 확인) → 미전송으로 볼 수 있다") → `close` → `list`(미해결 0건) → `p1-residue-check`(해결 8건, 잔존물 0, 컨테이너 이름은 `PSQL`·`RABBITCTL`로 덮어씀).
+- **새 관찰(S4)**: 스텁이 `/conversations.replies` 조회를 6번 받았다. 결과 불명 건을 maintenance 스레드가 스레드 조회로 자동 판정하려는 시도이고(로그: `스레드 조회 실패 reason=IOException` 3회), 스텁이 연결을 끊으니 판정에 실패해 `Unknown`이 유지됐다. 재발신은 없었다. (Unknown 건에 대한 자동 조회 접속은 계획 표에 없던 항목이다.)
+
+### 자원
+S2의 재시도 대기 때문에 서버가 약 3분 떠 있었고, 실측 동안 `qwen2.5:3b`(2.2GB)와 `bge-m3`(673MB)만 적재했다(둘 다 GPU 100%). 끝나고 컨테이너 0·임시 볼륨 제거·`ollama stop` 두 모델·`bootRun` 종료를 확인했다. 시스템 압축 메모리는 약 5.9GB 수준이었다. n8n 이미지(약 1GB)는 M42b를 위해 로컬에 남겨 두었다.
+
+## 53. 5단계 M42b 사람 입력 세션 (2026-10-11)
+
+**환경**: Apple M1 16GB, Docker 27.3.1, Ollama 0.34.0(`qwen2.5:7b`, `.env` 기본), 호스트 `bootRun` + 별도 compose 프로젝트(`slack-lab-m42`)의 RabbitMQ·Postgres(새 볼륨), n8n `2.42.6`(고정 digest, 사용자가 README의 `docker run`으로 기동). RAG·분류 끔, 알람 수신 켬. 서버는 **새 Slack 앱 토큰**으로 한 번 기동했다(계획의 "기존 앱으로 n8n 먼저"는 사용자가 `.env`를 먼저 새 앱 값으로 바꿔 순서를 합쳤다). 무거운 기동은 1회, 전체 약 45분.
+
+### n8n (C6·C7·C8·C9)
+| 항목 | 결과 |
+|---|---|
+| Header Auth Credential | 사람이 UI에서 입력. 첫 Execute는 노드에 Credential이 연결되기 전이라 "Credentials not found"로 멈췄고 서버에는 요청이 0건 도착했다(검증 무영향) |
+| 1회차(봇 미초대) | 수신 4건·`알람 발행 완료` 4줄·LLM 성공(11.4초) 뒤 **`not_in_channel`로 발신 실패 → DLQ 1건**. 새 앱을 `ALERT_CHANNEL` 채널에 초대하지 않은 설정 누락이다 |
+| 2회차(초대 후, 새 `StateChangeTime`) | 4건 전송 → `알람 발행 완료` 4줄, 처리 `Delivered`(큐 대기 37ms·LLM 7.7s·전송 0.5s·전체 8.3s). **`n8n-watch judge --expect 1` 합격(exit 0)**: 이 알람의 봇 메시지 정확히 1개, 발행 완료→첫 리포트 8.2초(기준 180초), 이후 15초 관찰 추가 메시지 없음 |
+| `p1-metrics --since 5m` (judge보다 먼저) | 정상 답변 1·발행 실패 0·반응 실패 0, RAG 호출 0(비활성). 보고용 |
+| C9 export | `n8n export:workflow --all` 결과에 `ALERT_SECRET` 값 0건. Credential은 ID·이름 참조만 남는다 |
+| 정리 | n8n 컨테이너 정지, 검증 볼륨 삭제(n8n 볼륨 0 확인), export 파일 삭제 |
+| **미수행** | ① 틀린 Credential 2회차(`--expect 0`): 사용자 결정으로 건너뜀. M41 CLI 실행의 "4건 모두 401"로 대체하며 사람 단계의 "리포트 0개" 관찰은 없다. ② 실행 출력 본문 export 재비교(C8): 하지 않음. 4건이 리포트 1개로 묶인 것이 간접 증거다 |
+
+### Manifest 새 앱 (C12)
+- 사용자가 `docs/slack-app-manifest.json`으로 같은 워크스페이스에 **새 앱**을 만들고 설치했다. 그 JSON의 Request URL은 자리표시자가 아니라 **실제 터널 주소로 바꾼 것**이어서(저장소에는 커밋하지 않고 되돌렸다) "Slack이 자리표시자 URL을 받아주는지"(M40 계획 변경의 가정)는 **확인하지 못했다**.
+- 첫 Request URL 검증은 서버가 떠 있지 않아 "didn't respond with the value of the challenge parameter"로 실패했다(터널은 정상, 8080 리스너 0). 서버를 올린 뒤 Retry로 통과했다 — `SETUP.md`의 해당 행(서버가 떠 있는가)과 일치한다.
+- 실제 멘션 1건: `반응 성공 detail=added` 1줄(👀 1개), 스레드 답글 전송 성공, 처리 `Delivered`(큐 대기 173ms·LLM 10.9s·전송 0.4s·전체 11.6s). 서명 검증 통과. **C12 합격**(Manifest로 만든 앱의 설치→이벤트 구독→멘션 응답).
+- 스코프 문제는 나오지 않았다.
+
+### 발견
+- 새 앱 설치 직후 **알람 채널 초대 누락**이 첫 알람 실패로 이어졌다. `SETUP.md` 문제 해결 표에 `not_in_channel`(알람 채널) 행을 추가했다. 실패한 알람은 DLQ(`recovery list`: `send`, `slack_api_error:not_in_channel`)에 남고 임시 볼륨과 함께 지웠다.
+- n8n UI에서 Import한 노드는 Credential 연결이 비어 있으므로(시크릿을 파일에 두지 않으려는 설계) 사람이 노드에서 Header Auth를 **선택해 연결**해야 한다. 저장 직후에도 한 번 "Credentials not found"가 보일 수 있다.
+
+### 자원·종료
+Ollama는 `qwen2.5:7b`만 적재(알람 리포트 LLM 호출 때문에 세션 내내 필요). 세션 종료 시 `bootRun` 종료(8080 리스너 0)·`docker compose -p slack-lab-m42 down -v`·n8n 정지와 볼륨 삭제·`ollama stop`을 확인했다. 사용자의 기존 `slack-lab_*` 볼륨 3개는 그대로 뒀다.

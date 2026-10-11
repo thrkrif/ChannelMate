@@ -9,7 +9,7 @@ Slack 이벤트를 트리거로 AI가 답하는 구조를 단계적으로 만드
 - 작업 계획 → [`PLAN.md`](.claude/docs/PLAN.md)
 - 실험 기록 → [`docs/EXPERIMENT-LOG.md`](docs/EXPERIMENT-LOG.md)
 
-**현재 단계: 4단계(요청 분류 + 모델 역할 분리) 완료(`v0.4.0`, 2026-10-09, 분류 기본 비활성으로 종결).** 1단계는 `v0.1.0`, 2단계(큐·워커 분리, M9~M18)는 `v0.2.0`, ADR-9 기반 전환(M19~M24)은 `v0.2.1`, 3단계는 RAG(임베딩·pgvector·색인·검색 주입·출처 표시·평가, M24.5a~M30)까지로 `v0.3.0`이다. 4단계는 Java 워커 안의 요청 분류·모델 역할 분리(P2-5·P2-6, M31~M36)로 `v0.4.0`이며, n8n·LangGraph는 아직 없다(LangGraph는 ADR-5 재검토로 보류). 세부 진행은 `.claude/docs/PLAN.md`가 정본이다. 단계 번호(3→4 등) 자체가 바뀔 때만 사용자 요청이 필요하다(Git 규칙) — 같은 단계 안의 진행 문구는 마일스톤마다 갱신한다.
+**현재 단계: 5단계(모니터링 지표 + n8n 예제 + 설치 자동화, M37~M43) 완료(`v0.5.0`, 2026-10-11, 2026-10-09 사용자 요청으로 착수).** 직전 4단계(요청 분류 + 모델 역할 분리)는 `v0.4.0`(2026-10-09)으로 분류 기본 비활성 종결했다. 1단계는 `v0.1.0`, 2단계(큐·워커 분리, M9~M18)는 `v0.2.0`, ADR-9 기반 전환(M19~M24)은 `v0.2.1`, 3단계는 RAG(임베딩·pgvector·색인·검색 주입·출처 표시·평가, M24.5a~M30)까지로 `v0.3.0`이다. 4단계는 Java 워커 안의 요청 분류·모델 역할 분리(P2-5·P2-6, M31~M36)로 `v0.4.0`이다. 5단계는 `p1-metrics` 로그 집계 확장·`metric=rag_result` 로그 한 줄, n8n 예제 워크플로(문서만, Java 변경 없음), 설치 가이드·`scripts/env-check`·Slack App Manifest이며, LangGraph는 ADR-5 재검토로 보류한 채 아직 없다. 다음 단계는 사용자가 정한다. 세부 진행은 `.claude/docs/PLAN.md`가 정본이다. 단계 번호(3→4 등) 자체가 바뀔 때만 사용자 요청이 필요하다(Git 규칙) — 같은 단계 안의 진행 문구는 마일스톤마다 갱신한다.
 
 ## 규칙
 
@@ -55,7 +55,7 @@ Slack 이벤트를 트리거로 AI가 답하는 구조를 단계적으로 만드
 - **세션**: 작업 단위(마일스톤)를 마치면 멈추지 않고 다음 단위로 이어간다. 단위를 끝낼 때마다 `.claude/docs/PLAN.md`의 진행 상태와 `docs/EXPERIMENT-LOG.md`를 갱신한다.
   PLAN.md 진행 상태의 `다음 세션 핸드오프` 소절도 그때마다 **덮어쓴다**(누적 금지, 10줄 안팎). 별도 handoff 파일은 두지 않는다.
   이 소절은 대화가 요약되거나 세션이 끊겨도 이어갈 수 있게 하는 안전망이다 — 대화에만 남은 상태는 이어지지 않는다.
-  **자동으로 넘어가지 않고 멈추는 지점**: (1) Slack 화면 조작(스코프 재설치, 채널 초대, 이벤트 구독 활성화 등) (2) ngrok URL 재등록 (3) 위 Git 규칙의 단계 전환. **PR 병합은 여기 포함되지 않는다** — 현재 단계 안의 마일스톤 PR은 승인 없이 병합하고 계속 진행한다. 2단계는 PLAN의 사용자 결정 멈춤(M9 성능 목표 미달 시 변경안)도 멈추는 지점이다. 3단계의 멈춤 지점은 PLAN 3단계 계획이 정한다(M24.5a Ollama 임베딩 미지원, M25 기존 볼륨 초기화, M30 합격선 미달). 4단계의 멈춤 지점은 PLAN 4단계 계획이 정한다(M31 라벨 신뢰도 미달·동시 적재 불가, 각 합격선 미달).
+  **자동으로 넘어가지 않고 멈추는 지점**: (1) Slack 화면 조작(스코프 재설치, 채널 초대, 이벤트 구독 활성화 등) (2) ngrok URL 재등록 (3) 위 Git 규칙의 단계 전환. **PR 병합은 여기 포함되지 않는다** — 현재 단계 안의 마일스톤 PR은 승인 없이 병합하고 계속 진행한다. 2단계는 PLAN의 사용자 결정 멈춤(M9 성능 목표 미달 시 변경안)도 멈추는 지점이다. 3단계의 멈춤 지점은 PLAN 3단계 계획이 정한다(M24.5a Ollama 임베딩 미지원, M25 기존 볼륨 초기화, M30 합격선 미달). 4단계의 멈춤 지점은 PLAN 4단계 계획이 정한다(M31 라벨 신뢰도 미달·동시 적재 불가, 각 합격선 미달). 5단계의 멈춤 지점은 PLAN 5단계 계획이 정한다(M42b의 n8n Credential 입력·Slack 앱 생성·설치·채널 초대·터널 URL 등록은 사용자가 직접 하며 이 지점에서 멈춘다, 각 합격선 미달, M43 `main` 병합·태그).
 
 ## 명령어
 
@@ -71,6 +71,11 @@ docker compose --profile app up --build           # 전체 스택: 수신·워�
 scripts/recovery list                             # 2단계: 결과 불명·DLQ 복구 CLI (check·resolve-completed·reprocess·close)
 scripts/p1-residue-check                          # 2단계: 해결된 건의 본문 잔존 검사(B18)
 scripts/p1-metrics <로그...>                      # 2단계: 로그 집계 (p50/p95·결과별 건수·적체, B14)
+scripts/p1-metrics --since 5m <로그...>          # 5단계: 최근 5분 구간 6개 지표(적체·큐 대기·LLM 시도·답변·결과 분포·RAG 분포, --now로 재현)
+python3 scripts/test_p1_metrics.py                # 5단계: p1-metrics 단위 검증(합성 로그, 외부 호출 없음)
+scripts/env-check [--index]                       # 5단계: .env 점검(필수값·RAG/알람/분류 조합, 키 이름·사유만 출력, exit 0/1). 단위: python3 scripts/test_env_check.py
+python3 scripts/test_manifest.py                  # 5단계: Manifest 정적 검증(코드가 부르는 Slack 메서드 ↔ 스코프·이벤트 대조, 외부 호출 없음)
+scripts/n8n-watch <start|judge>                   # 5단계: n8n 예제 리포트 관찰(실제 Slack 읽음, 사람 단계용; docs/n8n/README.md). 오프라인 검사: python3 scripts/test_n8n_example.py
 scripts/p1-load <warmup|seq|burst|dup|distinct>   # 2단계: 검증 부하 생성기 (합성 서명 요청)
 scripts/rag-index [--rebuild] [--confirm-delete]  # 3단계: RAG 색인 CLI (RAG_ENABLED·RAG_EMBEDDING_MODEL·RAG_EMBEDDING_DIMENSION·RAG_DOCS_DIR 필요, 문서는 저장소 밖)
 scripts/rag-roundtrip "<질문>" [라벨]             # 3단계: 합성 멘션을 실제 테스트 채널에 보내 RAG 답글을 확인 (--batch <questions.json> <라벨>: 질문 세트 일괄)
