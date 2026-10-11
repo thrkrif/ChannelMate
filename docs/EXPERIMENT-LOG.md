@@ -1339,3 +1339,31 @@ Codex 독립 판정(TAG-AFTER-CHECKS)이 요구한 ①알람형 Slack 왕복 ②
 
 ### 자원
 S2의 재시도 대기 때문에 서버가 약 3분 떠 있었고, 실측 동안 `qwen2.5:3b`(2.2GB)와 `bge-m3`(673MB)만 적재했다(둘 다 GPU 100%). 끝나고 컨테이너 0·임시 볼륨 제거·`ollama stop` 두 모델·`bootRun` 종료를 확인했다. 시스템 압축 메모리는 약 5.9GB 수준이었다. n8n 이미지(약 1GB)는 M42b를 위해 로컬에 남겨 두었다.
+
+## 53. 5단계 M42b 사람 입력 세션 (2026-10-11)
+
+**환경**: Apple M1 16GB, Docker 27.3.1, Ollama 0.34.0(`qwen2.5:7b`, `.env` 기본), 호스트 `bootRun` + 별도 compose 프로젝트(`slack-lab-m42`)의 RabbitMQ·Postgres(새 볼륨), n8n `2.42.6`(고정 digest, 사용자가 README의 `docker run`으로 기동). RAG·분류 끔, 알람 수신 켬. 서버는 **새 Slack 앱 토큰**으로 한 번 기동했다(계획의 "기존 앱으로 n8n 먼저"는 사용자가 `.env`를 먼저 새 앱 값으로 바꿔 순서를 합쳤다). 무거운 기동은 1회, 전체 약 45분.
+
+### n8n (C6·C7·C8·C9)
+| 항목 | 결과 |
+|---|---|
+| Header Auth Credential | 사람이 UI에서 입력. 첫 Execute는 노드에 Credential이 연결되기 전이라 "Credentials not found"로 멈췄고 서버에는 요청이 0건 도착했다(검증 무영향) |
+| 1회차(봇 미초대) | 수신 4건·`알람 발행 완료` 4줄·LLM 성공(11.4초) 뒤 **`not_in_channel`로 발신 실패 → DLQ 1건**. 새 앱을 `ALERT_CHANNEL` 채널에 초대하지 않은 설정 누락이다 |
+| 2회차(초대 후, 새 `StateChangeTime`) | 4건 전송 → `알람 발행 완료` 4줄, 처리 `Delivered`(큐 대기 37ms·LLM 7.7s·전송 0.5s·전체 8.3s). **`n8n-watch judge --expect 1` 합격(exit 0)**: 이 알람의 봇 메시지 정확히 1개, 발행 완료→첫 리포트 8.2초(기준 180초), 이후 15초 관찰 추가 메시지 없음 |
+| `p1-metrics --since 5m` (judge보다 먼저) | 정상 답변 1·발행 실패 0·반응 실패 0, RAG 호출 0(비활성). 보고용 |
+| C9 export | `n8n export:workflow --all` 결과에 `ALERT_SECRET` 값 0건. Credential은 ID·이름 참조만 남는다 |
+| 정리 | n8n 컨테이너 정지, 검증 볼륨 삭제(n8n 볼륨 0 확인), export 파일 삭제 |
+| **미수행** | ① 틀린 Credential 2회차(`--expect 0`): 사용자 결정으로 건너뜀. M41 CLI 실행의 "4건 모두 401"로 대체하며 사람 단계의 "리포트 0개" 관찰은 없다. ② 실행 출력 본문 export 재비교(C8): 하지 않음. 4건이 리포트 1개로 묶인 것이 간접 증거다 |
+
+### Manifest 새 앱 (C12)
+- 사용자가 `docs/slack-app-manifest.json`으로 같은 워크스페이스에 **새 앱**을 만들고 설치했다. 그 JSON의 Request URL은 자리표시자가 아니라 **실제 터널 주소로 바꾼 것**이어서(저장소에는 커밋하지 않고 되돌렸다) "Slack이 자리표시자 URL을 받아주는지"(M40 계획 변경의 가정)는 **확인하지 못했다**.
+- 첫 Request URL 검증은 서버가 떠 있지 않아 "didn't respond with the value of the challenge parameter"로 실패했다(터널은 정상, 8080 리스너 0). 서버를 올린 뒤 Retry로 통과했다 — `SETUP.md`의 해당 행(서버가 떠 있는가)과 일치한다.
+- 실제 멘션 1건: `반응 성공 detail=added` 1줄(👀 1개), 스레드 답글 전송 성공, 처리 `Delivered`(큐 대기 173ms·LLM 10.9s·전송 0.4s·전체 11.6s). 서명 검증 통과. **C12 합격**(Manifest로 만든 앱의 설치→이벤트 구독→멘션 응답).
+- 스코프 문제는 나오지 않았다.
+
+### 발견
+- 새 앱 설치 직후 **알람 채널 초대 누락**이 첫 알람 실패로 이어졌다. `SETUP.md` 문제 해결 표에 `not_in_channel`(알람 채널) 행을 추가했다. 실패한 알람은 DLQ(`recovery list`: `send`, `slack_api_error:not_in_channel`)에 남고 임시 볼륨과 함께 지웠다.
+- n8n UI에서 Import한 노드는 Credential 연결이 비어 있으므로(시크릿을 파일에 두지 않으려는 설계) 사람이 노드에서 Header Auth를 **선택해 연결**해야 한다. 저장 직후에도 한 번 "Credentials not found"가 보일 수 있다.
+
+### 자원·종료
+Ollama는 `qwen2.5:7b`만 적재(알람 리포트 LLM 호출 때문에 세션 내내 필요). 세션 종료 시 `bootRun` 종료(8080 리스너 0)·`docker compose -p slack-lab-m42 down -v`·n8n 정지와 볼륨 삭제·`ollama stop`을 확인했다. 사용자의 기존 `slack-lab_*` 볼륨 3개는 그대로 뒀다.

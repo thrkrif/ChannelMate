@@ -121,14 +121,14 @@
 - [x] **M40 Slack App Manifest + 설치 가이드** — 완료(`EXPERIMENT-LOG.md` §50): Manifest·`SETUP.md`·`README.md`, 코드가 부르는 Slack 메서드 5개↔스코프 4·이벤트 1 대조, 단위 10건. **계획 변경**: Request URL은 생략이 아니라 자리표시자(`*.example.com`) — Slack이 Request URL 없는 이벤트 구독을 거부할 가능성이 커서. 수락 여부는 M42b에서 확인
 - [x] **M41 n8n 예제 워크플로 + 본문 동일성 검사** — 완료(`EXPERIMENT-LOG.md` §51): `docs/n8n/`(JSON·README), 이미지 `n8nio/n8n:2.42.6@sha256:526daa38…` 고정, n8n 실행 스모크(스텁이 같은 본문 4건·헤더 일치·잘못된 Credential은 4건 모두 401), `scripts/n8n-watch`, 단위 37건
 - [x] **M42 자동 통합 실측(무거운 기동 1회)** — 완료·합격(`EXPERIMENT-LOG.md` §52): S1~S4가 기대 줄 수 표와 오차 0(C1), `rag_result` 합 11줄(C3), 스냅샷 경과 ≤5초(C2), 금지 정보 노출 0(C4). `RAG_ALLOWEDHOSTS` 바인딩 확인. **기존 로컬 볼륨은 V1 체크섬 불일치로 못 써서 별도 compose 프로젝트로 실측했다**(기존 볼륨 무변경)
-- [ ] **M42b 사람 입력 세션(멈춤 지점)** — C6·C7·C8·C9·C12·C13
+- [x] **M42b 사람 입력 세션(멈춤 지점)** — 완료·부분 합격(`EXPERIMENT-LOG.md` §53, 2026-10-11): n8n 실제 UI 실행에서 4건 전송→수신 4건·리포트 정확히 1개(8.2초, C6·C7 정상 경로)·export 시크릿 0(C9), Manifest로 만든 새 앱이 실제 멘션에 스레드 답글 1·👀 1(C12). **미수행**: 틀린 Credential 2회차(사용자 결정, M41 CLI 실행의 401로 대체)·실행 출력 본문 export 재비교(C8)·자리표시자 Request URL 수락 여부(실제 주소를 넣은 Manifest로 생성). 첫 알람은 봇 미초대로 `not_in_channel` 발신 실패(DLQ 1, 임시 볼륨과 함께 삭제)
 - [ ] **M43 단계 완료** — 사용자 요청 시에만
 
 ### 다음 세션 핸드오프
 
 단위를 끝낼 때마다 이 소절을 덮어쓴다. 재현 가능한 사실만 적고, 진행 체크는 위 목록이 정본이다.
 
-- **상태(2026-10-09)**: 5단계 착수(M37-0 완료). 4단계는 `v0.4.0`으로 종결(분류 기본 비활성, C4 의도 11/12 미충족은 §46에 남김). M37 완료(`metric=rag_result` 한 줄, 빌드 522건 통과). M38 완료(`p1-metrics --since` 6개 지표, 단위 23건). M42 완료(자동 구간 M37~M42 끝). 다음은 M42b 사람 입력 세션(멈춤 지점): n8n Credential 입력·Slack 앱 생성·설치·채널 초대·터널 URL 등록은 사용자가 직접 하며, 시작하면 할 일과 필요한 정보를 안내하고 멈춘다. 서버·컨테이너는 모두 내려 있고 n8n 이미지(약 1GB)만 로컬에 있다. 사용자의 기존 로컬 Postgres 볼륨(`slack-lab_postgres-data`)은 V1 체크섬 불일치로 현재 코드와 맞지 않으니 평소 개발에 쓰려면 백업 후 초기화가 필요하다(M25 안내). M42b에서 n8n Credential 입력·Slack 앱 생성·설치·채널 초대·터널 URL 등록은 사람이 하며, 그 지점에서 멈추고 사용자가 할 일을 안내한다.
+- **상태(2026-10-11)**: 5단계 M37~M42b 완료(M42b는 부분 합격, §53). 남은 것은 M43 단계 완료(`develop`→`main` 병합·태그 `v0.5.0`, 사용자 요청 시에만)와 PRD 5단계 항목 추가 여부(계획 R9)다. 서버·컨테이너·임시 볼륨·n8n은 모두 내려 있고 `ollama serve`만 원래대로 떠 있다. 새 Slack 앱은 사용자의 워크스페이스에 설치된 채로 남아 있고 `.env`는 새 앱 토큰으로 바뀌어 있다(기존 앱은 별개). 사용자의 기존 로컬 Postgres 볼륨(`slack-lab_postgres-data`)은 V1 체크섬 불일치로 현재 코드와 맞지 않으니 평소 개발에 쓰려면 백업 후 초기화가 필요하다(M25 안내).
 - 실행: `docker compose up -d rabbitmq postgres`(.env에 `POSTGRES_PASSWORD`) + 호스트 `bootRun`, 또는 `docker compose --profile app up --build`. 호스트 8080을 옛 `bootRun`(Redis 시절 코드)이 점유하고 있을 수 있다 — 컨테이너는 `RECEIVER_PORT=18080`으로 띄웠다.
 - 부하·실험은 노트북 부담이 크다(Docker + Ollama 약 8GB). 개발 중 검증은 가볍게, 전체 스택·LLM 실험은 마일스톤 끝에 한 번만 하고 바로 내린다(`docker compose down --remove-orphans`, `ollama stop qwen2.5:7b`).
 - M22 실측: 순차 20건 수신 p95 71ms·답변 p95 6.4s, 버스트 수신 p95 129ms, D1~D3 중복 0, R1~R3 통과(R2 인수 64초, R3 자동 조회 완료). 언어 방어가 실제로 작동해 일부 질문은 재시도 뒤 실패 안내로 끝난다(§21).
