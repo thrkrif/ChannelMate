@@ -63,6 +63,7 @@ ngrok http 8080                                   # 별도 터미널, 나온 htt
 | `missing_scope` | 스코프 추가 뒤 Reinstall 했는가 |
 | 비공개 채널에서 스레드 문맥이 안 읽힌다 | 봇 스코프에 `groups:history`를 추가하고 **재설치**, 그 채널에 봇 초대 |
 | Request URL이 Verified되지 않는다 | 서버가 떠 있는가 / `SLACK_SIGNING_SECRET`이 이 앱의 값인가 / 주소 끝이 `/slack/events`인가 |
+| 알람 리포트가 채널에 안 올라온다(로그에 `not_in_channel`) | `ALERT_CHANNEL` 채널에도 **새 앱을 초대**했는가. 답변 채널과 알람 채널이 다르면 둘 다 초대한다. 실패한 알람은 DLQ에 남으므로 `scripts/recovery list`로 확인한다 |
 | 기동이 바로 실패한다 | `scripts/env-check` 먼저. RAG를 켰다면 `RAG_EMBEDDING_MODEL`·`RAG_EMBEDDING_DIMENSION` |
 
 ## 다른 앱으로 바꿨다가 돌아가기
