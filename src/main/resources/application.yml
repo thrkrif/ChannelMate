@@ -1,6 +1,8 @@
 spring:
   application:
     name: slack-lab
+  main:
+    banner-mode: off
   # Postgres는 어댑터가 DataSource를 직접 만든다(M20~M22). 자동 구성이 켜지면 접속 정보가 없는 역할(수신·복구)도
   # DataSource 생성에 실패한다.
   autoconfigure:
@@ -49,3 +51,18 @@ llm:
   client: ${LLM_CLIENT:ollama}
   base-url: ${LLM_BASE_URL:http://localhost:11434/v1}
   model: ${LLM_MODEL:}
+
+# 6단계 M44: 한 줄 JSON 로그. 콘솔과 회전 파일이 같은 포매터라 내용이 같다(로그 저장소는 파일을 읽는다).
+# 파일 위치는 역할별로 갈라 컨테이너/호스트 어느 쪽에서든 수집기가 경로 4개를 명시해 읽는다. 회전은 3일·200MB.
+logging:
+  structured:
+    format:
+      console: com.slack.lab.adapter.logging.SlackLabJsonFormatter
+      file: com.slack.lab.adapter.logging.SlackLabJsonFormatter
+  file:
+    name: ${SLACK_LAB_LOG_DIR:.runtime/logs}/${app.role}/slack-lab.log
+  logback:
+    rollingpolicy:
+      max-history: 3
+      total-size-cap: 200MB
+      max-file-size: 50MB

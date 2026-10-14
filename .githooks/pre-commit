@@ -28,6 +28,13 @@ if [ -n "$dups" ]; then
   exit 1
 fi
 
+# 6단계: 구조화 로그·세션 장부·비밀 파일이 있는 .runtime/은 어떤 경우에도 커밋하지 않는다.
+runtime=$(git diff --cached --name-only --diff-filter=AM | grep -E '(^|/)\.runtime/' || true)
+if [ -n "$runtime" ]; then
+  echo "pre-commit: .runtime/ 아래 파일이 스테이징돼 있다(로그·세션 장부·비밀). 지우고 다시 커밋한다." >&2
+  exit 1
+fi
+
 if [ "$count" -gt 0 ]; then
   echo "pre-commit: 토큰 또는 로컬 절대경로로 보이는 줄이 스테이징돼 있다. 값은 출력하지 않고 개수만 표시한다." >&2
   echo "  해당 추가 줄 ${count}개" >&2
