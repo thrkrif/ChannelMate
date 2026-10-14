@@ -1,5 +1,7 @@
 # 작업 계획 — slack-lab
 
+**6단계(모니터링 스택): 진행 중(2026-10-14 착수, M44~M50) — 아래 `# 6단계 계획`**
+**5단계(모니터링 지표 + n8n 예제 + 설치 자동화): 완료(`v0.5.0`, 2026-10-11, M37~M43)**
 **1단계(P0): 완료** — `main` 병합(#17), 태그 `v0.1.0`
 **2단계(P1): 완료(`v0.2.0`) — 이후 ADR-9 기반 전환 M19~M24는 `develop`에서 완료**
 **4단계(요청 분류 + 모델 역할 분리): 완료(`v0.4.0`, 2026-10-09, 분류 기본 비활성으로 종결; C4 의도 11/12 미충족) — 계획 M31~M36은 아래 `# 4단계 계획`**
@@ -128,11 +130,10 @@
 
 단위를 끝낼 때마다 이 소절을 덮어쓴다. 재현 가능한 사실만 적고, 진행 체크는 위 목록이 정본이다.
 
-- **상태(2026-10-11)**: 5단계 완료(`v0.5.0`): M37~M42b(M42b는 부분 합격, §53)와 M43. 다음 단계는 사용자가 정한다(후보: 반복 검색·사람 승인 후 재개 등 LangGraph 재비교 조건, 분류 재도전, 클라우드 LLM opt-in). 서버·컨테이너·임시 볼륨·n8n은 모두 내려 있고 `ollama serve`만 원래대로 떠 있다. 새 Slack 앱은 사용자의 워크스페이스에 설치된 채로 남아 있고 `.env`는 새 앱 토큰으로 바뀌어 있다(기존 앱은 별개). 사용자의 기존 로컬 Postgres 볼륨(`slack-lab_postgres-data`)은 V1 체크섬 불일치였으므로 2026-10-11 사용자 요청으로 저장소 밖에 `pg_dump` 백업 후 삭제했다(`docker compose up -d postgres`가 새 볼륨으로 Flyway를 처음부터 적용한다). RabbitMQ·Redis 볼륨은 그대로다.
-- 실행: `docker compose up -d rabbitmq postgres`(.env에 `POSTGRES_PASSWORD`) + 호스트 `bootRun`, 또는 `docker compose --profile app up --build`. 호스트 8080을 옛 `bootRun`(Redis 시절 코드)이 점유하고 있을 수 있다 — 컨테이너는 `RECEIVER_PORT=18080`으로 띄웠다.
-- 부하·실험은 노트북 부담이 크다(Docker + Ollama 약 8GB). 개발 중 검증은 가볍게, 전체 스택·LLM 실험은 마일스톤 끝에 한 번만 하고 바로 내린다(`docker compose down --remove-orphans`, `ollama stop qwen2.5:7b`).
-- M22 실측: 순차 20건 수신 p95 71ms·답변 p95 6.4s, 버스트 수신 p95 129ms, D1~D3 중복 0, R1~R3 통과(R2 인수 64초, R3 자동 조회 완료). 언어 방어가 실제로 작동해 일부 질문은 재시도 뒤 실패 안내로 끝난다(§21).
-- 클라이언트 Slack 호출만 가짜인 `FullStackWiringIT`·`RoleWiringIT`가 배선 회귀를 막는다. 테스트는 Testcontainers(postgres:16-alpine, rabbitmq:3.13-alpine).
+- **상태(2026-10-14)**: 6단계(모니터링) M44-0(단계 전환 문서) 진행. 정본 계획은 `.omc/plans/stage6-plan.md`(untracked, 6단계 몫)와 7단계 계획 `.omc/plans/stage7-plan.md`(Anthropic·클라우드, 아직 착수 안 함). 5단계는 `v0.5.0`으로 완료.
+- G0는 계획서 권장값으로 진행(D-8 (a), G-13 미선택, 나머지 편차·해석 기본값). 사람 입력 멈춤은 계획서 "사람 입력 멈춤 지점" 표(H1·H2a·H2b·H3·H4·H6, S1a·S1b·S2·S3, L/M)를 따른다. `main` 병합·태그는 M50에서 사용자 요청 시에만.
+- 실행: `docker compose up -d rabbitmq postgres` + 호스트 `bootRun`, 전체 스택은 `docker compose --profile app up --build`. 6단계 기동은 `scripts/s6-session`(M44에서 추가)로 세션 단위 프로젝트에서만 한다.
+- 새 Slack 앱은 설치된 채로 남아 있고 `.env`는 새 앱 토큰이다. 서버·컨테이너는 내려 있다.
 - **세션 종료 시 호스트 `bootRun`/컨테이너를 켜둘지 끌지 사용자에게 명시적으로 알릴 것.**
 
 ---
@@ -890,3 +891,20 @@ Slack `app_mention` → 서명 검증 → 중복 억제 → Ollama 답변 → �
 
 ### ADR(요약)
 Decision: 지표는 로그 집계 확장 + 로그 1줄, n8n은 예제만, 설치는 Manifest·가이드·`env-check`로 한정한다. Drivers: 비용 0원·16GB 자원·추가 상주 서비스 없음, 기존 core 경계(ADR-9) 유지, 검증 가능한 최소 범위. Rejected: Actuator/Micrometer·외부 대시보드(상주 비용), n8n Java 어댑터(직접 수신이 이미 P2-7·P2-8 충족), setup 스크립트까지의 설치 자동화(OS·계정 분기), `처리 지표` 줄에 rag 필드 추가(스펙의 "최종 반환 지점 별도 1줄"과 충돌). Follow-ups: 재시도 분포 지표, n8n CLI 자동 import 검토(미검증), 구조화 로그 정비.
+
+---
+
+# 6단계(모니터링 스택) 계획
+
+승인: 2026-10-14 사용자 요청으로 단계 전환(G0는 계획서 권장값 수락). 요구사항은 deep-interview 9라운드(ambiguity 13%, 답변은 사용자가 codex에 위임)로 확정했고, ralplan consensus 5회전 + 분리 검토(6·7단계 분리, 2026-10-14)를 거쳤다. 정본(상세): `.omc/specs/deep-interview-stage6.md`, `.omc/plans/stage6-plan.md`(untracked). Anthropic 어댑터·클라우드 비용 가드·규칙 문구 변경은 7단계(`.omc/plans/stage7-plan.md`).
+
+### 요약
+- **마일스톤**: M44 구조화 로그·회전 파일·사건 키 → M45 Micrometer·관리 서버(9091)·Bearer → M46 모니터링 스택·프로비저닝·의미 스파이크 → M47 `/alerts/grafana`·템플릿 폴백 → M48 n8n 예제·측정 도구 → M49a 자동 실측 → M49b 사람 입력 세션 → M50 문서·종결(`v0.6.0`, `main` 병합·태그는 사용자 요청 시에만).
+- **합격선**: C1~C5·C8~C12(상세는 계획서). 사후 변경 금지. 코어 diff 0, 규칙 1~12 문구 무변경.
+- **장부**: 측정 14회·물리 콜드 기동 14회, 가벼운 기동 ≤5·중간 ≤4(각 ≤30분), 무거운 세션 약 17.5시간.
+- **멈춤 지점**: G0, H1·H2a·H2b, H3·H4·H6, 세션 시작 S1a·S1b·S2·S3, L/M 상한 소진, 합격선 미달, M50 `main` 병합·태그. 사람 입력은 계획서 표를 따른다.
+- **미달 공통 규칙**: 원인(로그 형식 / 유도 방법 / 코드 / 환경)을 특정하고 개선안을 올린 뒤 멈춰 사용자 결정을 받는다. 합격선은 사후에 바꾸지 않는다.
+
+### 진행 상태
+- [ ] M44-0 단계 전환 문서(이 PR)
+- [ ] M44 구조화 로그 / [ ] M45 Micrometer·관리 서버 / [ ] M46 모니터링 스택 / [ ] M47 `/alerts/grafana`·폴백 / [ ] M48 n8n 예제·측정 도구 / [ ] M49a 자동 실측 / [ ] M49b 사람 입력 세션 / [ ] M50 종결
