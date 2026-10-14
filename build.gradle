@@ -46,6 +46,12 @@ dependencies {
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
+// 시험 JVM이 호스트의 모니터링·LLM 설정을 상속하지 않게 접두 단위로 지운다(새 LLM_*·MANAGEMENT_* 키도 자동 포함).
+// 이 목록은 상수 한 곳이며 scripts/test_log_contract.py가 계획의 4개와 같은지 확인한다. 로그는 저장소 .runtime 대신 build 아래로 보낸다.
+def testEnvStripPrefixes = ['MANAGEMENT_', 'LLM_', 'GRAFANA_', 'SLACK_LAB_']
+
 tasks.named('test') {
     useJUnitPlatform()
+    environment.keySet().removeIf { k -> testEnvStripPrefixes.any { k.startsWith(it) } }
+    environment 'SLACK_LAB_LOG_DIR', layout.buildDirectory.dir('test-logs').get().asFile.path
 }

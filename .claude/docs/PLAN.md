@@ -130,10 +130,10 @@
 
 단위를 끝낼 때마다 이 소절을 덮어쓴다. 재현 가능한 사실만 적고, 진행 체크는 위 목록이 정본이다.
 
-- **상태(2026-10-14)**: 6단계(모니터링) M44-0(단계 전환 문서) 진행. 정본 계획은 `.omc/plans/stage6-plan.md`(untracked, 6단계 몫)와 7단계 계획 `.omc/plans/stage7-plan.md`(Anthropic·클라우드, 아직 착수 안 함). 5단계는 `v0.5.0`으로 완료.
-- G0는 계획서 권장값으로 진행(D-8 (a), G-13 미선택, 나머지 편차·해석 기본값). 사람 입력 멈춤은 계획서 "사람 입력 멈춤 지점" 표(H1·H2a·H2b·H3·H4·H6, S1a·S1b·S2·S3, L/M)를 따른다. `main` 병합·태그는 M50에서 사용자 요청 시에만.
-- 실행: `docker compose up -d rabbitmq postgres` + 호스트 `bootRun`, 전체 스택은 `docker compose --profile app up --build`. 6단계 기동은 `scripts/s6-session`(M44에서 추가)로 세션 단위 프로젝트에서만 한다.
-- 새 Slack 앱은 설치된 채로 남아 있고 `.env`는 새 앱 토큰이다. 서버·컨테이너는 내려 있다.
+- **상태(2026-10-14)**: 6단계(모니터링) M44-0·M44 수행 완료(통합 판정 대기). 다음은 M45(Micrometer·관리 서버 9091) — **시작 전 H2a**: 사용자가 `.env`에 `MANAGEMENT_METRICS_TOKEN`(`openssl rand -hex 32`)·`GRAFANA_ADMIN_PASSWORD`를 넣는다(비밀값은 Claude가 만들거나 출력하지 않는다). 정본 계획은 `.omc/plans/stage6-plan.md`(untracked)이고 7단계(Anthropic) 계획은 `.omc/plans/stage7-plan.md`(착수 안 함).
+- G0는 계획서 권장값(D-8 (a), G-13 미선택). 사람 입력 멈춤은 계획서 "사람 입력 멈춤 지점" 표를 따른다. `main` 병합·태그는 M50에서 사용자 요청 시에만.
+- 기동 도구: 검증 기동은 `scripts/s6-session start --id <ID>` → `compose -- …`/`spawn -- …` → `teardown`(장부 기반 종료·최종 확인). 구조화 로그는 `.runtime/`(gitignore)에 쌓인다. 호스트 `bootRun`은 `spawn --env-file .env`로 띄운다.
+- 서버·컨테이너·모델은 모두 내려 있다. 새 Slack 앱은 설치된 채로 남아 있고 `.env`는 새 앱 토큰이다.
 - **세션 종료 시 호스트 `bootRun`/컨테이너를 켜둘지 끌지 사용자에게 명시적으로 알릴 것.**
 
 ---
@@ -906,5 +906,5 @@ Decision: 지표는 로그 집계 확장 + 로그 1줄, n8n은 예제만, 설치
 - **미달 공통 규칙**: 원인(로그 형식 / 유도 방법 / 코드 / 환경)을 특정하고 개선안을 올린 뒤 멈춰 사용자 결정을 받는다. 합격선은 사후에 바꾸지 않는다.
 
 ### 진행 상태
-- [ ] M44-0 단계 전환 문서(이 PR)
-- [ ] M44 구조화 로그 / [ ] M45 Micrometer·관리 서버 / [ ] M46 모니터링 스택 / [ ] M47 `/alerts/grafana`·폴백 / [ ] M48 n8n 예제·측정 도구 / [ ] M49a 자동 실측 / [ ] M49b 사람 입력 세션 / [ ] M50 종결
+- [x] M44-0 단계 전환 문서(PR #90)
+- [x] M44 구조화 로그 — 수행 완료(통합 판정 대기, `EXPERIMENT-LOG.md` §54) / [ ] M45 Micrometer·관리 서버 / [ ] M46 모니터링 스택 / [ ] M47 `/alerts/grafana`·폴백 / [ ] M48 n8n 예제·측정 도구 / [ ] M49a 자동 실측 / [ ] M49b 사람 입력 세션 / [ ] M50 종결

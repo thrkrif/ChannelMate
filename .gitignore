@@ -26,6 +26,8 @@ bin/
 # 로그 — 실험 로그 원본에는 event_id·채널 ID가 들어간다. 가공한 결과만 docs/EXPERIMENT-LOG.md에 남긴다
 *.log
 logs/
+# 6단계: 구조화 로그·세션 장부·비밀 파일은 저장소 밖 취급
+.runtime/
 
 # Claude Code 로컬 설정·개인 권한 (.claude/docs 등 공유 문서는 커밋한다)
 .claude/settings.local.json

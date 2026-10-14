@@ -1367,3 +1367,26 @@ S2의 재시도 대기 때문에 서버가 약 3분 떠 있었고, 실측 동안
 
 ### 자원·종료
 Ollama는 `qwen2.5:7b`만 적재(알람 리포트 LLM 호출 때문에 세션 내내 필요). 세션 종료 시 `bootRun` 종료(8080 리스너 0)·`docker compose -p slack-lab-m42 down -v`·n8n 정지와 볼륨 삭제·`ollama stop`을 확인했다. 사용자의 기존 `slack-lab_*` 볼륨 3개는 그대로 뒀다.
+
+## 54. 6단계 M44 구조화 로그·회전 파일·사건 키 (2026-10-14)
+
+**환경**: Apple M1 16GB, Docker(전용 compose 프로젝트 `slack-lab-s6v-m44`의 RabbitMQ·Postgres, 새 볼륨), 호스트 `bootRun`(`APP_ROLE=all`, `LLM_CLIENT=echo`), Python 3.11(PATH)·3.9(`/usr/bin/python3`). Slack 이벤트·LLM 호출 없음(가벼운 기동 1회, 21:15~21:25, 약 10분).
+
+**구현**: Boot 3.4.1 내장 구조화 로깅 + 코어 밖 포매터 `adapter/logging/SlackLabJsonFormatter`·`EventKeys`. 스파이크(생성자에 `Environment` 주입으로 `app.role` 읽기)가 한 번에 통과해 1-B(logback 인코더 직접 구성) 대안은 쓰지 않았다. `core/` 변경 0.
+
+| C1 항목 | 결과 |
+|---|---|
+| (1) stdout JSON 파싱 실패·필수 필드 누락 | 실제 기동 캡처 JSON 100줄(비JSON 0줄): 파싱 실패 **0**, 필수 필드 누락 **0**, 계약 위반 **0**. 예외 줄은 `exc` 한 문자열(시험: 개행 이스케이프) |
+| (2) 회전 파일 = 같은 구간 stdout | 파일 줄 대 같은 구간 stdout JSON 줄 차이 **0**. 3일·200MB·50MB 설정 적용(회전 자체는 10분 기동에서 발생하지 않음) |
+| (3) `p1-metrics` 텍스트·JSON·혼합 | 레거시·`--since 5m --now` 모두 출력 차이 0(`test_p1_metrics.py` 29건 PATH·`/usr/bin/python3` 양쪽 통과) |
+| (4) `n8n-watch` 판정 | 텍스트·JSON·혼합 수신 로그 동일 판정(`test_n8n_example.py` 41건 양쪽 통과) |
+| (5) 사건 키 | `backlog_snapshot`·`llm_final_failure`·`processing_metric`·`rag_result` + 관측 실패 `backlog_unobserved`(두 줄) 매핑·부분 스냅샷 0 치환 없음 시험 통과. 실제 기동에서는 `backlog_snapshot` 14줄 확인, 관측 실패 줄은 유도하지 못했다(35초 Postgres 정지에도 스냅샷이 이어졌다) — 단위 시험으로 대체 |
+| (6) 기존 테스트·`ArchitectureTest`·코어 diff | `./gradlew build` 성공, 실패 0, `scripts/core-diff-check` 코어 diff 0 |
+| (7) Python 3.9 | 모든 Python 시험이 `/usr/bin/python3`(3.9.6)에서도 통과 |
+| (8) `EventKeys` 판별 문자열 | `EventKeysContractTest`가 코어 소스 원문과 대조, `p1-metrics`와 같은 분류표 |
+| (9) `fields` 허용 키 | 계획 목록 + `final_attempt`(LLM 최종 실패 줄에서 재시도 중간 실패와 구분용 불리언). 키마다 숫자/불리언/열거값 형태만 통과 |
+| (10) 시험 환경 격리 | `MANAGEMENT_`·`LLM_`·`GRAFANA_`·`SLACK_LAB_` 접두를 넣은 환경으로 시험을 돌린 뒤 저장소 `.runtime/` 0, 지정한 로그 경로 0, 9091 리스너 0. `build.gradle` 제거 접두 목록 = 4개(`test_log_contract.py` 계약) |
+| (11) 세션 도구 | `scripts/s6-session` 단위 시험 20건 통과, 기동이 `teardown`으로 끝나고 최종 확인 통과(컨테이너·볼륨·리스너 8080/9091/3000·ollama 모델 0) |
+
+**발견·주의**: 시험 로그는 `build/test-logs`로, 기동 로그는 `.runtime/`(gitignore·pre-commit 거부)에 쌓인다. 저장소가 iCloud 폴더 안이면 `.runtime`이 동기화 대상이 되므로 비밀이 들어갈 M45 이후는 계획의 G-7 결정을 따른다. 이 마일스톤의 로그에는 비밀이 없다. 코어 로그 원문의 `event_id`는 기존대로 `msg`에 남는다(새 정보 아님).
+
