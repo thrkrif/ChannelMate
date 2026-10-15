@@ -111,6 +111,31 @@ class EnvironmentTests(unittest.TestCase):
         self.env.normal_mentions.assert_called_once_with(5)
         self.assertEqual(self.env.measured("rule1")["h"], 0)
 
+    def test_rule1_late_report_delays_close_and_measures_actual_snapshot_h(self):
+        self.begin()
+        self.env.first = self.snapshot(dlq=1)
+        self.env.close_id = "synthetic"
+        self.env.induce = lambda *args: 1000
+        self.g.alert_view.side_effect = lambda title: (
+            "", "firing" if title == "복구 필요" and self.clock.now() >= 1033 else "normal", "ok", [])
+        self.clock.hooks.append(lambda: self.slack.counts.update(ALARM=int(self.clock.now() >= 1073)))
+        closed = []
+
+        def close(args):
+            closed.append(self.clock.now())
+            self.env.db_checked = self.clock.now()
+            self.clock.sleep(3)
+            self.snapshot()
+            return "", (closed[-1], self.clock.now())
+
+        self.env.cli = close
+        result = run.run_round(self.env, "rule1", "fire", 1, 50, settle_s=1)
+        self.assertEqual(closed, [1073])
+        self.assertEqual(result["verdict"], "pass")
+        self.assertEqual((result["h"], result["hold_elapsed"], result["measured"]["h"]), (50, 73, 76))
+        self.assertEqual(result["measured"]["timeline"]["close_finished"], 1076)
+        self.assertEqual(result["report_elapsed"], 73)
+
     def test_rule2_fire_uses_log_timestamp_and_echo_restore(self):
         def inject(n):
             self.env.event_id = "synthetic"

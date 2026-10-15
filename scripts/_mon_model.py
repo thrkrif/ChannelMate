@@ -22,7 +22,7 @@ RULES = {
 H_CEILING = 150  # D-8 (a): 넘으면 멈춤(경계 재정의는 사용자 결정)
 NON_FIRE_LIMIT = {"rule1": 25, "rule3": 115}  # 비발화 회차의 실측 H가 for−5를 넘으면 채점하지 않고 "유도 문제"
 RECOVERY_S = (30, 45)  # 관측 실패 줄 뒤 패널·규칙 ③ 회복 시간 R(단일 정의)
-RULE_RESET_WAIT_S = 70  # 같은 규칙 Normal 뒤 새 알림 그룹을 만들기 위한 대기(SP-13 결과에 따라 늘어날 수 있음)
+RULE_RESET_WAIT_S = 130  # 같은 규칙 Normal 뒤 알림 그룹이 비도록 기다리는 시간: 해소 재전송 보존 10초 + 다음 플러시 ≤60초 + 빈 그룹 정리 ≤30초에 여유(70초는 실측으로 부족했다, D-15)
 
 
 def eval_count(start, end, phase, step=STEP):

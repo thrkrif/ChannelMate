@@ -66,6 +66,9 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_ANALYTICS_REPORTING_ENABLED: "false"
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # 해소된 알림을 Alertmanager로 15분(기본) 재전송하면 알림 그룹이 비지 않아, 같은 규칙의 새 발화가 group_wait(5s)이 아니라
+      # group_interval 격자를 기다리고 짧은 발화는 통지가 빠진다(6단계 M49a B3 실측). 해소 한 번 전달 뒤에는 재전송이 필요 없다.
+      GF_UNIFIED_ALERTING_RESOLVED_ALERT_RETENTION: "10s"
       # 연락 지점 프로비저닝이 읽는 값(비밀은 파일에 쓰지 않는다)
       ALERT_SECRET: ${ALERT_SECRET:-}
       GRAFANA_ALERT_WEBHOOK_URL: ${GRAFANA_ALERT_WEBHOOK_URL:-http://host.docker.internal:8080/alerts/grafana}

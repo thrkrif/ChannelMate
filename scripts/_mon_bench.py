@@ -51,6 +51,10 @@ def digest(path):
 
 
 def counts(rows):
+    # 모니터링을 켠 행에서는 실패 단계 부하가 규칙 ②를 실제로 발화시켜 알람 리포트(event_id=alert-grafana-…) 처리 지표가 같은 로그에 섞인다.
+    # 사용자 멘션 집계에서는 빼야 F-echo 기대 사건 수(시도 20·답글 0)와 맞는다. 알람 리포트 수는 따로 센다.
+    alerts = [r for r in rows if r.get("event") == "processing_metric" and "event_id=alert-grafana-" in r.get("msg", "")]
+    rows = [r for r in rows if r not in alerts]
     msgs = [r.get("msg", "") for r in rows]
     return {"attempts": sum(r.get("event") == "processing_metric" for r in rows),
             "retries": sum("LLM 재시도 가능한 실패 → 재시도 예약" in m for m in msgs),

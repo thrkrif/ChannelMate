@@ -324,6 +324,75 @@ check("실행기: 예상 외 발화 ② 중 ④(중단 59초)는 fail, 60초는 
       run.run_round(FakeEnv("rule2", others=[("rule4-host", 59)]), "rule2", "fire", 1, 0)["verdict"] == "fail"
       and run.run_round(FakeEnv("rule2", others=[("rule4-host", 60)]), "rule2", "fire", 1, 0)["verdict"] == "induction")
 check("실행기: 위상 전수에서 ① 발화 회차 모두 pass", all(run.run_round(FakeEnv("rule1", phase=p), "rule1", "fire", 1, 50)["verdict"] == "pass" for p in PHASES[::7]))
+
+
+class ReportWhileHeldEnv(FakeEnv):
+    def reports(self, rule):
+        if self.t_res is not None:
+            return self.posts_at_resolve
+        return super().reports(rule)
+
+    def resolve(self, rule, variant, round_no):
+        self.posts_at_resolve = self.reports(rule)
+        super().resolve(rule, variant, round_no)
+
+    def measured(self, rule):
+        return {**super().measured(rule), "h": self.t_res - self.t_ind}
+
+
+late = ReportWhileHeldEnv("rule1", report_delay=40)
+late_result = run.run_round(late, "rule1", "fire", 1, 50)
+check("실행기: H 뒤 리포트가 올 때까지 해소하지 않고 최초 발화·리포트 시각 기록",
+      late_result["verdict"] == "pass" and late.t_res == 73 and late.posts_at_resolve == 1
+      and late_result["firing_elapsed"] == 33 and late_result["report_elapsed"] == 73
+      and late_result["h"] == 50 and late_result["measured"]["h"] == 73
+      and (60, "firing") in late_result["states"], str(late_result))
+missing = ReportWhileHeldEnv("rule1", report_ok=False)
+missing_result = run.run_round(missing, "rule1", "fire", 1, 50, poll_s=7)
+check("실행기: 리포트 없으면 조작 성립 기준 deadline에서 해소하고 fail",
+      missing.t_res == 83 and missing_result["verdict"] == "fail" and missing_result["reports"] == 0, str(missing_result))
+for delay, expected_resolve, verdict in ((8, 140, "pass"), (42, 165, "pass"), (60, 174, "fail")):
+    queue = ReportWhileHeldEnv("rule3", report_delay=delay)
+    queue_result = run.run_round(queue, "rule3", "fire", 1, 140)
+    check(f"실행기: ③ 무회귀 리포트 지연 {delay}초 → {expected_resolve}초 해소·{verdict}",
+          queue.t_res == expected_resolve and queue_result["verdict"] == verdict
+          and queue_result["firing_elapsed"] == 123, str(queue_result))
+queue_quiet = ReportWhileHeldEnv("rule3")
+queue_quiet_result = run.run_round(queue_quiet, "rule3", "quiet", 1, 110)
+check("실행기: ③ quiet는 H 뒤 즉시 해소·리포트 0 유지",
+      queue_quiet.t_res == 110 and queue_quiet_result["verdict"] == "pass", str(queue_quiet_result))
+instant = ReportWhileHeldEnv("rule2")
+instant_result = run.run_round(instant, "rule2", "fire", 1, 0)
+check("실행기: ② H=0도 조작 직후부터 리포트 대기 후 해소",
+      instant.t_res == 11 and instant_result["verdict"] == "pass" and instant.posts_at_resolve == 1, str(instant_result))
+
+
+class HoldObservationErrorEnv(ReportWhileHeldEnv):
+    def state(self, rule):
+        return self.hold_error if self.now() >= 60 else super().state(rule)
+
+
+for error in ("nodata", "error"):
+    broken = HoldObservationErrorEnv("rule1", report_ok=False)
+    broken.hold_error = error
+    broken_result = run.run_round(broken, "rule1", "fire", 1, 50)
+    check(f"실행기: H 이후 {error}도 해소 후 observe·상태 보존",
+          broken.t_res == 60 and broken_result["verdict"] == "observe"
+          and (60, error) in broken_result["states"], str(broken_result))
+
+
+class DuplicateAfterResolveEnv(ReportWhileHeldEnv):
+    manages_hold = True
+    history = []
+
+    def reports(self, rule):
+        return 2 if self.now() >= 80 else super().reports(rule)
+
+
+duplicate = DuplicateAfterResolveEnv("rule1", report_delay=40)
+duplicate_result = run.run_round(duplicate, "rule1", "fire", 1, 50)
+check("실행기: 해소 뒤 settle 중 리포트 2건이면 기존대로 fail",
+      duplicate.t_res == 73 and duplicate_result["reports"] == 2 and duplicate_result["verdict"] == "fail", str(duplicate_result))
 # 회차 열: 같은 규칙 Normal 확인 → 70초 대기 → 다음 회차
 env_seq = FakeEnv("rule1")
 orig_resolve = env_seq.resolve
@@ -358,7 +427,7 @@ def cli(*args):
 rc, out, _ = cli("run", "--mode", "host", "--scenario", "rule3-quiet", "--dry-run")
 plan = _j.loads(out)["plan"] if rc == 0 else []
 check("run --dry-run: ③ 비발화 계획 (a)130/(b)110 번갈아, 70초 대기, 예산 174", rc == 0 and [p["h"] for p in plan] == [130, 110, 130, 110, 130]
-      and _j.loads(out)["reset_wait_s"] == 70 and _j.loads(out)["deadline_s"] == 174)
+      and _j.loads(out)["reset_wait_s"] == 130 and _j.loads(out)["deadline_s"] == 174)
 rc, out, _ = cli("run", "--mode", "app", "--scenario", "rule4-fire", "--repeat", "2", "--dry-run")
 check("run --dry-run: ④ 발화는 차단 H=95", rc == 0 and [p["h"] for p in _j.loads(out)["plan"]] == [95, 95])
 check("run: 모드와 시나리오가 안 맞으면 exit 2", cli("run", "--mode", "host", "--scenario", "rule4-fire", "--dry-run")[0] == 2)
