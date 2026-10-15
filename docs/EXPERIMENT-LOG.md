@@ -1466,3 +1466,36 @@ Ollama는 `qwen2.5:7b`만 적재(알람 리포트 LLM 호출 때문에 세션 �
 **결정 D-14 (2026-10-15, 사용자 지시로 codex와 협의)**: 중간 기동 상한 **4→7을 사후 승인**한다. 위 5회 초과는 사용자 확인 없이 일어난 것이므로 "상한을 지켰다"고 소급 판정하지 않고, 5회를 장부에 유지한다. 승인 범위는 6번째 = M46 종단 재검증 전용, 7번째 = M47 전용(M49a 앞 사람 세션과 합치지 않고, 실제 규칙 ② 발화·페이로드 캡처·재생을 먼저 검증해 연동 부채를 해소). 8번째 기동과 합격선 완화는 허용하지 않는다. 재검증이 미달이거나 추가 기동이 필요하면 즉시 멈춘다. 기능·보안·시간·표본 수 합격선은 그대로다.
 
 **종단 재검증 결과 (6번째 중간 기동, 2026-10-15 22:18~22:20 KST, `scripts/monitoring-verify provision`, touch-loop 적용)**: 23/23 통과, 종료 코드 0. 세 확인 항목 — (1) 실제 앱 스냅샷이 대시보드 패널 1 질의로 조회됨(앱 → 회전 파일 → Alloy → Loki) 통과 (2) Loki 레이블 = {app, role, level} 통과 (3) 관측 실패 줄 주입 → 규칙 ③이 NoData(Pending)로 교란됐다가 R 30~45초 안에 복귀(실제 평가 위상 포함, 판정 구간 28~47초) 통과. 나머지(Prometheus 대상 up=1, 규칙 4개 평가 오류 0, `docker.sock` 마운트 0, Alloy 읽기 전용, Grafana만 127.0.0.1:3000, `stop`/`reset --confirm` 계약, `teardown` 최종 확인)도 통과. 종료 뒤 세션 프로젝트의 컨테이너·볼륨·8080/9091/3000 리스너·ollama 모델 0. 주입한 관측 실패 줄은 합성(실기동에서 자연 발생한 것이 아님) — 실제 재현은 M49a 부채로 남는다. 이 기동으로 중간 기동은 6/7을 썼고 7번째는 M47 전용이다.
+
+## 57. 6단계 M47 `/alerts/grafana` 건별 정규화 + 템플릿 폴백 + 검색 우회 + 푸터 제거 (2026-10-15)
+
+**상태: 수행 완료(통합 판정 대기) — 단위·통합 시험 통과, 규칙 ② 실제 발화 페이로드 캡처·재생(중간 기동 7번째, D-14)도 통과.** 환경: Apple Silicon(arm64), Docker Desktop, Testcontainers(rabbitmq:3.13-alpine, pgvector:pg16), 모니터링 스택은 §56과 같은 digest 고정 이미지.
+
+**만든 것**: `adapter/alert/{GrafanaAlertSplitter, GrafanaAlertNormalizer, GrafanaAlertMarker, AlertTemplateLlmClient, AlertFooterChatNotifier}`, `config/{AlertReportConfig, AlertAwareRetrievalService}`(+ `RagRetrievalConfig`: 워커·all은 우회 검색 서비스, 색인은 기존), `AlertController`의 Grafana 분기(전체 분리·검증 뒤 발행, 쿼리 `token` 401), `LlmConfig.llmStartupCheck`의 `@Qualifier("llmClient")`, 검증 도구 `scripts/monitoring-verify replay`(+ `_mon_m47.py`, `test_mon_m47.py`). **코어 diff 0.**
+
+**C5 판정**
+| 항목 | 결과 | 증거 |
+|---|---|---|
+| 배열 1·2·4건, firing/resolved 혼합, `DatasourceNoData/Error`, 미등록 규칙 무시·200, 대상 0건 200 | 통과 | `AlertControllerGrafanaTest` |
+| 필수값 누락 → 전체 400·큐 저장 0, 쿼리 `token` 401, 21건 400, 부분 큐 저장 실패 503 + 재전송 시 같은 ID | 통과 | `AlertControllerGrafanaTest`, `GrafanaAlertSplitterTest`, `GrafanaAlertNormalizerTest` |
+| 중복 키: 최초+재전송 3회 같고 `startsAt`이 바뀌면 다름, `grafana-` 접두, 이벤트 ID `alert-grafana-…`(`alert-alert-` 0) | 통과 | 위 + 정규화기 시험 |
+| 설치 식별자(`externalURL`) 검증·정규화 동등·다른 설치 다른 키 (h) | 통과 | `GrafanaAlertSplitterTest` |
+| ②·④ 생성형 호출 0, ①·③ 처리 시도당 `LlmClient` 위임 ≤1(OpenAI 호환은 HTTP ≤2·총 ≤10초), 실패·시간 초과 시 템플릿 + `알람 템플릿 폴백` 줄 1 (g) | 통과 | `AlertTemplateLlmClientTest`, `AlertTemplateDelegationCountTest`(실제 어댑터 + 스텁 접속 수) |
+| 임베딩 호출 0·`rag_result` 줄 0(알람), 비알람은 정확히 1줄 (e) | 통과 | `AlertAwareRetrievalServiceTest`, `GrafanaAlertWiringIT` |
+| `GrafanaAlertWiringIT`: 실제 `AlertController` HTTP → 큐 → 핸들러 → 실제 `SlackClient` → 가짜 Slack, ②④ 위임 0, RAG 켠 구성에서 푸터 NONE·일반 멘션 푸터 무변경, 발신 실패 시 COMPLETED 아님 (a)(b) | 통과 | `GrafanaAlertWiringIT` 3건 |
+| 데코레이터 존재 시 `llmStartupCheck`가 원본으로 확인·웜업, Ollama 모드 확인 로그 1회 (c) | 통과 | `LlmStartupCheckWithDecoratorTest`, `RoleWiringIT` |
+| 규칙 ②(`role="-"`) 페이로드 200·리포트 1 (f) | 통과 | 통합 시험 + 아래 실제 캡처 |
+| CloudWatch 기존 시험 무변경, `ArchitectureTest`, `./gradlew build`, 코어 diff 0 | 통과 | 전체 빌드 성공, `scripts/core-diff-check` |
+
+**규칙 ② 실제 발화 캡처·재생 (중간 기동 7번째, `monitoring-verify replay`, 17/17 통과)**: 앱을 F-echo(OpenAI 호환 + 닫힌 포트, 모델 확인 끔)로 띄우고 서명된 멘션 1건을 보내 `llm_final_failure`를 만들었다. Grafana가 보낸 **실제 웹훅 페이로드를 캡처**했다(R4 확인: 최상위 `externalURL` 있음, 경보별 `status`·`labels.slack_lab_rule/severity/role="-"`·`startsAt` 있음, 웹훅에 `X-Alert-Secret` 헤더 전달). 캡처 본문(저장소 밖 `~/.slack-lab-secrets/m47/`, 600)을 최초 + 재전송 2회 보내 모두 200이고 알람 채널(스텁)에 리포트 **정확히 1개**, 본문은 `[자동 요약]` 템플릿(`echo:`·검색 안내 푸터 없음)이다. 이 기동에서 Slack 호출은 로컬 스텁으로 돌려 실제 채널에 아무것도 가지 않았다. 폴백 줄·`rag_result` 줄은 0.
+
+**이월 부채 처리**: C2(7) Ollama 모드 확인 로그는 `RoleWiringIT`가 OpenAI 호환 모드(스텁 `/v1/models`)에서 `LLM 모델 확인됨`이 정확히 1회임을 단언해 닫았다(데코레이터가 붙어도 원본으로 확인).
+
+**발견·결정**
+- 시험 JVM에서 시험용 로그 어펜더는 스프링 기동 중 로그 시스템 재초기화로 사라진다 → 기동 로그는 `OutputCaptureExtension`으로 센다(기동 뒤 붙인 어펜더는 유지된다).
+- 템플릿의 사실 줄은 정규화기 출력과 **같은 엄격한 정규식**일 때만 옮긴다(모양이 다르면 생략) — 프롬프트에 섞인 원문이 리포트로 새지 않는다.
+- 규칙 ①③은 템플릿 폴백이 있어 "모델이 죽은 상태"에서도 리포트가 나간다. 단 이 리포트는 분석이 아니라 고정 안내라 사람이 확인해야 한다는 점을 템플릿 본문이 말한다.
+- `AlertController`의 Grafana 분기는 발행이 하나라도 확정되지 않으면 503이지만 나머지 건은 계속 발행한다(재전송 시 중복은 선점이 흡수).
+
+**기동 알림**: 중간 기동 7번째(7/7 소진) — 2026-10-15 약 22:30~22:39 KST(약 9분, 사전 알림은 최종 보고에 기록). 종료 후 컨테이너·볼륨·8080/9091/3000 리스너 0, `buildx_buildkit` 하나만 남음. 가벼운 기동은 변화 없음(5/7).
+

@@ -4,6 +4,7 @@
 사용: scripts/monitoring-verify mgmt --mode host|app [--id <기동 ID>] [--keep-volumes]
       scripts/monitoring-verify spike [--only 이름,…]        M46 의미 스파이크 SP-1~SP-13(중간 기동 1회, 전용 프로젝트 `-spike`)
       scripts/monitoring-verify provision                    M46 프로비저닝 검증(중간 기동 1회, 실제 앱 + `scripts/monitoring start --host`)
+      scripts/monitoring-verify replay                       M47 규칙 ② 실제 발화 페이로드 캡처 + /alerts/grafana 재생 3회(중간 기동 1회, Slack은 로컬 스텁)
       scripts/monitoring-verify stub metrics --port P --token-file F    Bearer를 검사하는 가짜 /actuator/prometheus
       scripts/monitoring-verify stub webhook --port P                   웹훅을 받아 한 줄 JSON으로 출력하는 가짜 수신기
 
@@ -601,6 +602,19 @@ def cmd_provision(argv):
     return finish(rep)
 
 
+def cmd_replay(argv):
+    if argv:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    import _mon_m47
+    rep = Report()
+    try:
+        _mon_m47.run_replay(rep, s6, sys.modules[__name__])
+    except Exception as e:  # noqa: BLE001
+        rep.add("검증 중단", False, f"{type(e).__name__}: {str(e)[:200]}")
+    return finish(rep)
+
+
 def cmd_stub(argv):
     import _mon_spike as ms
     opts = dict(zip(argv[1::2], argv[2::2]))
@@ -624,7 +638,7 @@ def cmd_stub(argv):
 
 
 def main(argv):
-    commands = {"mgmt": cmd_mgmt, "spike": cmd_spike, "provision": cmd_provision, "stub": cmd_stub}
+    commands = {"mgmt": cmd_mgmt, "spike": cmd_spike, "provision": cmd_provision, "replay": cmd_replay, "stub": cmd_stub}
     if not argv or argv[0] not in commands:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2

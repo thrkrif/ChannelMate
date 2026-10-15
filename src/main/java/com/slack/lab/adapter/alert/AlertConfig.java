@@ -15,4 +15,10 @@ class AlertConfig {
     CloudWatchAlertNormalizer cloudWatchAlertNormalizer(ObjectMapper mapper, AlertProperties props) {
         return new CloudWatchAlertNormalizer(mapper, props.channel());
     }
+
+    @Bean
+    @ConditionalOnRole({AppRole.RECEIVER, AppRole.ALL})
+    GrafanaAlertNormalizer grafanaAlertNormalizer(ObjectMapper mapper, AlertProperties props) {
+        return new GrafanaAlertNormalizer(mapper, props.channel());
+    }
 }

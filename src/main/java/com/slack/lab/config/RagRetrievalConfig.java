@@ -13,10 +13,23 @@ import org.springframework.context.annotation.Configuration;
 @ConditionalOnProperty(prefix = "rag", name = "enabled", havingValue = "true")
 class RagRetrievalConfig {
 
+    /** 워커·all은 알람 우회가 있는 검색 서비스, 색인(평가)은 기존 그대로다. */
     @Bean
+    @ConditionalOnRole({AppRole.WORKER, AppRole.ALL})
     RetrievalService retrievalService(EmbeddingClient embedding, VectorStore store, RagProperties rag,
             RagRetrievalProperties retrieval) {
-        return new RetrievalService(embedding, store, new RetrievalService.Config(rag.searchDeadlineMs(), retrieval.topK(),
-                retrieval.minScore(), retrieval.maxContextChars(), retrieval.maxQueryChars()));
+        return new AlertAwareRetrievalService(embedding, store, config(rag, retrieval));
+    }
+
+    @Bean("retrievalService")
+    @ConditionalOnRole({AppRole.INDEXER})
+    RetrievalService indexerRetrievalService(EmbeddingClient embedding, VectorStore store, RagProperties rag,
+            RagRetrievalProperties retrieval) {
+        return new RetrievalService(embedding, store, config(rag, retrieval));
+    }
+
+    private static RetrievalService.Config config(RagProperties rag, RagRetrievalProperties retrieval) {
+        return new RetrievalService.Config(rag.searchDeadlineMs(), retrieval.topK(), retrieval.minScore(),
+                retrieval.maxContextChars(), retrieval.maxQueryChars());
     }
 }
