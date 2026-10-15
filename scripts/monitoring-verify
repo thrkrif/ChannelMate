@@ -19,6 +19,7 @@
       scripts/monitoring-verify rag-prepare --session D --project P    세션 DB에 가상 문서 색인(DB 대상 확인 뒤 jar 실행기로)
       scripts/monitoring-verify teardown --project P                   해당 프로젝트의 세션을 s6-session teardown으로 종료
       scripts/monitoring-verify bench --mode host|app --row echo --session D [--minutes 30] [--out F] [--launcher bootrun|jar|verifyBootRun] [--build-first]
+      scripts/monitoring-verify bench --mode host --row echo-mon --session D [--minutes 30] [--out F]   B3 측정 후 환경 유지 → run → teardown
       scripts/monitoring-verify stub webhook --port P                   웹훅을 받아 한 줄 JSON으로 출력하는 가짜 수신기
 
 기동 한 번(`s6-session`의 전용 compose 프로젝트)을 스스로 열고 닫는다. 비밀(관리 토큰)은 `.env`에서 메모리로만 읽고 어떤 출력·결과 파일에도

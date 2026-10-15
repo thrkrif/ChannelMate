@@ -337,6 +337,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(settings["LLM_CLIENT"], "ollama")
         self.assertEqual(settings["LLM_BASE_URL"], "http://localhost:9/v1")
         self.assertEqual(settings["RETRY_MAXRETRIES"], "3")
+        self.assertEqual(settings["EXPERIMENT_HALTAFTERSEND"], "false")
         self.assertEqual(self.session.spawn.call_args.args[1], ["./gradlew", "verifyBootRun", "-q"])
         self.mv.s6.assert_not_called()
         with open(self.path) as stream:
