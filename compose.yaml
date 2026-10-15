@@ -31,6 +31,9 @@ x-app-env: &app-env
   RAG_EMBEDDING_MODEL: ${RAG_EMBEDDING_MODEL:-}
   RAG_EMBEDDING_DIMENSION: ${RAG_EMBEDDING_DIMENSION:-0}
   RAG_RETRIEVAL_MIN_SCORE: ${RAG_RETRIEVAL_MIN_SCORE:-0.54}
+  # 6단계 M45: 지표 관리 서버는 .env에 MANAGEMENT_METRICS_TOKEN이 있을 때만 켜진다(없으면 리스너 0). 컨테이너 안에서는 모든 인터페이스에
+  # 바인딩하되(같은 네트워크의 Prometheus가 닿아야 하므로) 9091은 호스트에 게시하지 않고 `scrape` 네트워크로만 노출한다.
+  MANAGEMENT_SERVER_ADDRESS: 0.0.0.0
 
 services:
   rabbitmq:
@@ -71,6 +74,8 @@ services:
     environment:
       <<: *app-env
       APP_ROLE: receiver
+    # alerts: Grafana가 웹훅을 보내는 경로(수신만). scrape: Prometheus가 지표를 긁는 경로. default: rabbitmq·postgres 도달.
+    networks: [default, scrape, alerts]
     ports:
       - "127.0.0.1:${RECEIVER_PORT:-8080}:8080"
 
@@ -79,12 +84,20 @@ services:
     environment:
       <<: *app-env
       APP_ROLE: worker
+    networks: [default, scrape]
 
   reactor:
     <<: *app
     environment:
       <<: *app-env
       APP_ROLE: reactor
+    networks: [default, scrape]
+
+# 6단계 M45: 선택형 모니터링 스택(compose.monitoring.yaml, M46)이 붙는 네트워크. 모니터링을 안 써도 정의만 있고 비용은 없다.
+# internal이 아니다 — Prometheus(호스트 모드의 host.docker.internal:9091)와 Grafana(호스트 웹훅·n8n)가 호스트에 닿아야 한다.
+networks:
+  scrape: {}
+  alerts: {}
 
 volumes:
   rabbitmq-data:

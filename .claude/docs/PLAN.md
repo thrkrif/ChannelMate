@@ -130,10 +130,11 @@
 
 단위를 끝낼 때마다 이 소절을 덮어쓴다. 재현 가능한 사실만 적고, 진행 체크는 위 목록이 정본이다.
 
-- **상태(2026-10-14)**: 6단계(모니터링) M44-0·M44 수행 완료(통합 판정 대기). 다음은 M45(Micrometer·관리 서버 9091) — **시작 전 H2a**: 사용자가 `.env`에 `MANAGEMENT_METRICS_TOKEN`(`openssl rand -hex 32`)·`GRAFANA_ADMIN_PASSWORD`를 넣는다(비밀값은 Claude가 만들거나 출력하지 않는다). 정본 계획은 `.omc/plans/stage6-plan.md`(untracked)이고 7단계(Anthropic) 계획은 `.omc/plans/stage7-plan.md`(착수 안 함).
-- G0는 계획서 권장값(D-8 (a), G-13 미선택). 사람 입력 멈춤은 계획서 "사람 입력 멈춤 지점" 표를 따른다. `main` 병합·태그는 M50에서 사용자 요청 시에만.
-- 기동 도구: 검증 기동은 `scripts/s6-session start --id <ID>` → `compose -- …`/`spawn -- …` → `teardown`(장부 기반 종료·최종 확인). 구조화 로그는 `.runtime/`(gitignore)에 쌓인다. 호스트 `bootRun`은 `spawn --env-file .env`로 띄운다.
-- 서버·컨테이너·모델은 모두 내려 있다. 새 Slack 앱은 설치된 채로 남아 있고 `.env`는 새 앱 토큰이다.
+- **상태(2026-10-15)**: 6단계(모니터링) M44-0·M44·M45 수행 완료(통합 판정 대기). M45의 **H1(다른 장비에서 LAN IPv4·IPv6 각 5회 접근 시험)은 사용자 대기** — 안내문은 `EXPERIMENT-LOG.md` §55 끝. 다음은 M46(모니터링 스택·프로비저닝·의미 스파이크, 중간 기동 2회). 정본 계획은 `.omc/plans/stage6-plan.md`(untracked), 7단계(Anthropic) 계획은 `.omc/plans/stage7-plan.md`.
+- **기동 상한 장부**: 가벼운 기동 5/5 사용(M44 1, M45 호스트 1·앱 1·도구 오류 재현 1·앱 재실행 1). 계획의 "M48 n8n 기동 1 + 여유 1"을 앞당겨 썼으므로 **M48 가벼운 기동은 L/M 멈춤(사용자 결정)** 대상이다. 중간 0/4(M46 스파이크·프로비저닝·M47).
+- G0는 계획서 권장값(D-8 (a), G-13 미선택). 비밀 파일은 저장소 밖 `~/.slack-lab-secrets`(G-7, 600). 사람 입력 멈춤은 계획서 표를 따른다. `main` 병합·태그는 M50에서 사용자 요청 시에만.
+- 검증 도구: `scripts/s6-session`(기동 세션), `scripts/monitoring-verify mgmt --mode host|app`(관리 서버 C2·C3), `scripts/env-check --monitoring [--mode …]`. `.env`에 관리 토큰·Grafana 비밀번호가 입력돼 있다(값은 기록·출력하지 않는다).
+- 서버·컨테이너·모델은 모두 내려 있다(Docker Desktop은 켜진 채). 새 Slack 앱은 설치된 채로 남아 있고 `.env`는 새 앱 토큰이다.
 - **세션 종료 시 호스트 `bootRun`/컨테이너를 켜둘지 끌지 사용자에게 명시적으로 알릴 것.**
 
 ---
@@ -907,4 +908,4 @@ Decision: 지표는 로그 집계 확장 + 로그 1줄, n8n은 예제만, 설치
 
 ### 진행 상태
 - [x] M44-0 단계 전환 문서(PR #90)
-- [x] M44 구조화 로그 — 수행 완료(통합 판정 대기, `EXPERIMENT-LOG.md` §54) / [ ] M45 Micrometer·관리 서버 / [ ] M46 모니터링 스택 / [ ] M47 `/alerts/grafana`·폴백 / [ ] M48 n8n 예제·측정 도구 / [ ] M49a 자동 실측 / [ ] M49b 사람 입력 세션 / [ ] M50 종결
+- [x] M44 구조화 로그 — 수행 완료(통합 판정 대기, `EXPERIMENT-LOG.md` §54) / [x] M45 Micrometer·관리 서버 — 수행 완료(통합 판정 대기, `EXPERIMENT-LOG.md` §55; C3의 LAN 외부 접근 항목은 **H1 대기**) / [ ] M46 모니터링 스택 / [ ] M47 `/alerts/grafana`·폴백 / [ ] M48 n8n 예제·측정 도구 / [ ] M49a 자동 실측 / [ ] M49b 사람 입력 세션 / [ ] M50 종결

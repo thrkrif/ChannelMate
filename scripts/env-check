@@ -4,6 +4,8 @@
 사용: scripts/env-check              (저장소 루트의 .env)
       scripts/env-check <파일>        (다른 env 파일)
       scripts/env-check --index       (RAG 색인 CLI를 돌릴 때: RAG_DOCS_DIR도 점검한다)
+      scripts/env-check --monitoring [--mode host|app|linux-host]
+                                      (6단계: 지표 관리 토큰·Grafana 비밀번호·관리 서버 바인딩/포트 조합. 기본 mode=host)
 종료 코드: 0=이상 없음, 1=설정 오류(키 이름·사유만 출력), 2=사용법 오류.
 
 비밀값은 어떤 경우에도 출력하지 않는다 — 오류에는 키 이름과 사유만 쓴다. Spring 설정 검증기를 복제하지 않는다: 기동 때 Spring이
@@ -25,6 +27,10 @@ FALSE = {"false", "off", "no", "0"}
 DEFAULT_ALLOWED = ["localhost", "127.0.0.1", "::1", "host.docker.internal"]
 DEFAULT_LLM_URL = "http://localhost:11434/v1"
 IPV4 = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
+HEX64 = re.compile(r"^[0-9a-fA-F]{64}$")
+MODES = ("host", "app", "linux-host")
+# 토큰이 다른 비밀과 같으면 한쪽이 새는 순간 두 문이 같이 열린다. 비교만 하고 값은 출력하지 않는다.
+OTHER_SECRET_KEYS = ("ALERT_SECRET", "GRAFANA_ADMIN_PASSWORD", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "POSTGRES_PASSWORD")
 
 
 def parse_env(path):
@@ -90,7 +96,52 @@ def as_bool(value):
     return True if v in TRUE else False if v in FALSE else None
 
 
-def check(env, index=False):
+def check_monitoring(env, mode):
+    """6단계 M45: 모니터링 켤 때의 조합 점검. 값은 사유에 넣지 않는다."""
+    errors = []
+    token = env.get("MANAGEMENT_METRICS_TOKEN", "").strip()
+    if not token:
+        errors.append(("MANAGEMENT_METRICS_TOKEN", "모니터링을 쓰려면 필요하다(openssl rand -hex 32)"))
+    elif not HEX64.match(token):
+        errors.append(("MANAGEMENT_METRICS_TOKEN", "64자리 16진수여야 한다(openssl rand -hex 32)"))
+    if token:
+        for other in OTHER_SECRET_KEYS:
+            if env.get(other, "").strip() == token:
+                errors.append(("MANAGEMENT_METRICS_TOKEN", f"{other}와 같은 값을 재사용할 수 없다"))
+    grafana = env.get("GRAFANA_ADMIN_PASSWORD", "")
+    if not grafana.strip():
+        errors.append(("GRAFANA_ADMIN_PASSWORD", "모니터링을 쓰려면 필요하다"))
+    elif len(grafana) < 8 or grafana.strip().lower() in ("admin", "password", "grafana"):
+        errors.append(("GRAFANA_ADMIN_PASSWORD", "8자 이상이고 admin·password 같은 기본값이 아니어야 한다"))
+    elif grafana == token:
+        errors.append(("GRAFANA_ADMIN_PASSWORD", "MANAGEMENT_METRICS_TOKEN과 같은 값을 재사용할 수 없다"))
+    elif grafana in {env.get(k, "") for k in ("ALERT_SECRET", "SLACK_SIGNING_SECRET", "SLACK_BOT_TOKEN", "POSTGRES_PASSWORD")}:
+        errors.append(("GRAFANA_ADMIN_PASSWORD", "다른 비밀과 같은 값을 재사용할 수 없다"))
+
+    if "MANAGEMENT_SERVER_ADDRESS" in env:
+        addr = env["MANAGEMENT_SERVER_ADDRESS"].strip().strip("[]")
+        if not addr:
+            errors.append(("MANAGEMENT_SERVER_ADDRESS", "명시했지만 비어 있다(키를 지우면 기본값을 쓴다)"))
+        elif mode == "host" and addr in ("0.0.0.0", "::", "0:0:0:0:0:0:0:0"):
+            errors.append(("MANAGEMENT_SERVER_ADDRESS", "호스트 실행에서 모든 인터페이스 바인딩은 LAN에 지표를 노출한다 — 127.0.0.1을 쓴다"))
+        elif mode == "linux-host":
+            ok = bool(IPV4.match(addr)) and in_cidr(addr, "172.16.0.0/12") and addr.endswith(".1")
+            if not ok:
+                errors.append(("MANAGEMENT_SERVER_ADDRESS", "Linux 호스트 실행은 컨테이너가 닿는 도커 브리지 게이트웨이 주소(172.16.0.0/12의 .1)만 쓴다"))
+    elif mode == "linux-host":
+        errors.append(("MANAGEMENT_SERVER_ADDRESS", "Linux 호스트 실행은 도커 브리지 게이트웨이 주소를 명시해야 한다(127.0.0.1은 컨테이너에서 닿지 않는다)"))
+
+    if "MANAGEMENT_SERVER_PORT" in env:
+        raw = env["MANAGEMENT_SERVER_PORT"].strip()
+        business = {"8080", env.get("RECEIVER_PORT", "").strip()} - {""}
+        if not (raw.isdigit() and 1 <= int(raw) <= 65535):
+            errors.append(("MANAGEMENT_SERVER_PORT", "1~65535의 정수여야 한다(키를 지우면 기본 9091)"))
+        elif raw in business:
+            errors.append(("MANAGEMENT_SERVER_PORT", "업무 포트(8080·RECEIVER_PORT)와 같을 수 없다"))
+    return errors
+
+
+def check(env, index=False, monitoring=None):
     """(키, 사유) 목록을 돌려준다. 값은 사유에 넣지 않는다."""
     errors = []
 
@@ -161,13 +212,43 @@ def check(env, index=False):
         if llm_client == "echo":
             errors.append(("LLM_CLIENT", "분류를 켠 채 echo 클라이언트는 쓸 수 없다"))
 
+    if monitoring:
+        errors.extend(check_monitoring(env, monitoring))
+
     features = {"RAG": flags["RAG_ENABLED"], "알람": secret and channel, "분류": flags["CLASSIFICATION_ENABLED"]}
+    if monitoring:
+        features["모니터링"] = True
     return errors, features
 
 
 def main(argv):
+    argv = list(argv)
     index = "--index" in argv
-    args = [a for a in argv if a != "--index"]
+    monitoring = None
+    rest = []
+    i = 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--index":
+            pass
+        elif a == "--monitoring":
+            monitoring = monitoring or "host"
+        elif a == "--mode":
+            if i + 1 >= len(argv) or argv[i + 1] not in MODES:
+                print(__doc__.split("\n\n")[1], file=sys.stderr)
+                return 2
+            monitoring = monitoring or "host"
+            mode_value = argv[i + 1]
+            i += 1
+            rest.append(("mode", mode_value))
+        else:
+            rest.append(a)
+        i += 1
+    for item in list(rest):
+        if isinstance(item, tuple):
+            monitoring = item[1]
+            rest.remove(item)
+    args = rest
     if any(a.startswith("-") for a in args) or len(args) > 1:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2
@@ -175,7 +256,7 @@ def main(argv):
     if not os.path.isfile(path):
         print(f"오류: env 파일이 없다({'지정한 경로' if args else '저장소 루트의 .env'}). .env.example을 복사해 채운다")
         return 1
-    errors, features = check(parse_env(path), index=index)
+    errors, features = check(parse_env(path), index=index, monitoring=monitoring)
     for key, reason in errors:
         print(f"오류 {key}: {reason}")
     if errors:

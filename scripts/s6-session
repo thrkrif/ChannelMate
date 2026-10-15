@@ -4,7 +4,7 @@
 
 사용: scripts/s6-session start --id <기동 ID> [--keep-volumes]    세션 디렉터리를 만들고 경로를 출력한다
       scripts/s6-session compose [--session D] -- <docker compose 인자>   쓰는 -f·--profile을 장부에 먼저 적고 같은 -p로 실행
-      scripts/s6-session spawn [--session D] [--name N] [--env-file F] [--env K=V ...] -- <명령>   백그라운드 실행, PID 장부 기록
+      scripts/s6-session spawn [--session D] [--name N] [--env-file F ...] [--env K=V ...] -- <명령>   백그라운드 실행, PID 장부 기록
       scripts/s6-session mark  [--session D] monitoring|n8n              장부에 모니터링·n8n 사용을 표시한다
       scripts/s6-session status [--session D]
       scripts/s6-session teardown [--session D]                          종료 순서 1~8 (아래)
@@ -162,12 +162,12 @@ def read_env_file(path):
 
 def cmd_spawn(argv):
     sdir = pick_session(argv)
-    name, env_file, extra = None, None, {}
+    name, env_files, extra = None, [], {}
     while argv and argv[0] != "--":
         if argv[0] == "--name" and len(argv) > 1:
             name = argv[1]; argv = argv[2:]
         elif argv[0] == "--env-file" and len(argv) > 1:
-            env_file = argv[1]; argv = argv[2:]
+            env_files.append(argv[1]); argv = argv[2:]  # 여러 개면 뒤의 파일이 앞을 덮는다(비밀을 argv에 싣지 않고 회전 값을 얹는 용도)
         elif argv[0] == "--env" and len(argv) > 1 and "=" in argv[1]:
             k, v = argv[1].split("=", 1); extra[k] = v; argv = argv[2:]
         else:
@@ -181,7 +181,7 @@ def cmd_spawn(argv):
     name = name or os.path.basename(cmd[0])
     # .env를 먼저 읽고 그 뒤에 세션 값을 덮어쓴다(셸 export 순서에 기대지 않는다)
     env = dict(os.environ)
-    if env_file:
+    for env_file in env_files:
         env.update(read_env_file(env_file))
     env["SLACK_LAB_LOG_DIR"] = sdir
     env.update(extra)

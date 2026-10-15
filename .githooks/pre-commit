@@ -35,6 +35,19 @@ if [ -n "$runtime" ]; then
   exit 1
 fi
 
+# 6단계 M45: .env에만 있어야 할 관리 토큰·Grafana 관리자 비밀번호가 값과 함께 스테이징되면 막는다(키 이름만 있는 예시는 통과).
+mgmt=$(printf '%s\n' "$diff" | awk '
+  /^diff --git / { header = 1; next }
+  /^@@ /         { header = 0; next }
+  header         { next }
+  /^\+(MANAGEMENT_METRICS_TOKEN|GRAFANA_ADMIN_PASSWORD)=[^ \t]/ { n++ }
+  END { print n + 0 }
+') || mgmt=1
+if [ "$mgmt" -gt 0 ]; then
+  echo "pre-commit: MANAGEMENT_METRICS_TOKEN 또는 GRAFANA_ADMIN_PASSWORD에 값이 들어간 줄이 스테이징돼 있다. 값은 출력하지 않는다." >&2
+  exit 1
+fi
+
 if [ "$count" -gt 0 ]; then
   echo "pre-commit: 토큰 또는 로컬 절대경로로 보이는 줄이 스테이징돼 있다. 값은 출력하지 않고 개수만 표시한다." >&2
   echo "  해당 추가 줄 ${count}개" >&2

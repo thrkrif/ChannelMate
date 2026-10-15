@@ -18,7 +18,7 @@ import static com.tngtech.archunit.lang.syntax.ArchRuleDefinition.classes;
  * 의존 방향을 빌드에서 강제한다(ARCHITECTURE ADR-9, PLAN M19). 코어({@code core})는 인터페이스(포트)만 알고 구현체
  * (어댑터)와 인프라 라이브러리를 모른다. 이 규칙이 깨지면 큐·저장소·LLM 구현체를 바꿀 때 코어까지 고쳐야 한다.
  */
-@AnalyzeClasses(packages = "com.slack.lab", importOptions = ImportOption.DoNotIncludeTests.class)
+@AnalyzeClasses(packages = {"com.slack.lab", "com.slack.labmgmt"}, importOptions = ImportOption.DoNotIncludeTests.class)
 class ArchitectureTest {
 
     @ArchTest
@@ -26,6 +26,11 @@ class ArchitectureTest {
             .should().dependOnClassesThat().resideInAPackage("com.slack.lab.adapter..");
 
     // 규칙 2(핸들러는 HTTP를 모른다)를 코어 전체로 넓힌 것이다. Spring DI 어노테이션(@Component)과 설정 속성은 허용한다.
+    // 6단계 M45: 관리 서버 인증은 스캔 루트 밖 패키지에 있고, 코어는 그 존재를 몰라야 한다(코어 diff 0).
+    @ArchTest
+    static final ArchRule 코어는_관리_서버를_모른다 = noClasses().that().resideInAPackage("com.slack.lab.core..")
+            .should().dependOnClassesThat().resideInAPackage("com.slack.labmgmt..");
+
     @ArchTest
     static final ArchRule 코어는_인프라_라이브러리를_모른다 = noClasses().that().resideInAPackage("com.slack.lab.core..")
             .should().dependOnClassesThat().resideInAnyPackage(

@@ -169,6 +169,20 @@ os.kill(outsider.pid, signal.SIGKILL)
 outsider.wait()
 e.close()
 
+# --- spawn: --env-file 여러 개는 뒤의 파일이 앞을 덮는다(회전 값을 argv에 싣지 않고 얹는 용도) ---------------------------------
+e = Env()
+rc, sdir, _ = start(e)
+with tempfile.TemporaryDirectory() as td:
+    a, b, out_f = os.path.join(td, "a.env"), os.path.join(td, "b.env"), os.path.join(td, "out.txt")
+    open(a, "w").write("K1=first\nK2=keep\n")
+    open(b, "w").write("K1=second\n")
+    rc, pid, err = e.run("spawn", "--session", sdir, "--name", "envprobe", "--env-file", a, "--env-file", b,
+                         "--", "sh", "-c", f'printf "%s %s" "$K1" "$K2" > {out_f}')
+    time.sleep(0.5)
+    check("spawn: 뒤의 --env-file이 앞을 덮고 나머지는 유지", rc == 0 and open(out_f).read() == "second keep", err)
+e.run("teardown", "--session", sdir)
+e.close()
+
 # --- 최종 확인 실패 → exit 1 ----------------------------------------------------------------------------
 e = Env()
 rc, sdir, _ = start(e)

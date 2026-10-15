@@ -30,6 +30,9 @@ dependencies {
     runtimeOnly 'org.postgresql:postgresql'
     // M21: 큐(RabbitMQ). 확인(confirm)·ack·채널을 직접 다루려고 클라이언트 라이브러리를 그대로 쓴다
     implementation 'com.rabbitmq:amqp-client'
+    // 6단계 M45: 선택형 모니터링 스택이 긁어 가는 지표. 관리 서버는 토큰이 있을 때만 켜진다(config/RoleWebTypePostProcessor)
+    implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    implementation 'io.micrometer:micrometer-registry-prometheus'
     annotationProcessor 'org.springframework.boot:spring-boot-configuration-processor'
 
     // 한쪽만 선언하면 컴파일이 실패한다 (ARCHITECTURE §7)
