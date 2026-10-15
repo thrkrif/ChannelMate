@@ -1390,3 +1390,37 @@ Ollama는 `qwen2.5:7b`만 적재(알람 리포트 LLM 호출 때문에 세션 �
 
 **발견·주의**: 시험 로그는 `build/test-logs`로, 기동 로그는 `.runtime/`(gitignore·pre-commit 거부)에 쌓인다. 저장소가 iCloud 폴더 안이면 `.runtime`이 동기화 대상이 되므로 비밀이 들어갈 M45 이후는 계획의 G-7 결정을 따른다. 이 마일스톤의 로그에는 비밀이 없다. 코어 로그 원문의 `event_id`는 기존대로 `msg`에 남는다(새 정보 아님).
 
+## 55. 6단계 M45 Micrometer 계측 + 관리 서버(9091) + Bearer 인증 (2026-10-15)
+
+**환경**: Apple M1 16GB, Docker(전용 compose 프로젝트 `slack-lab-s6v-m45-host|app`의 RabbitMQ·Postgres, 새 볼륨), 호스트는 `java -jar`(bootJar), 앱 모드는 `slack-lab-app` 이미지의 수신·워커·반응 3컨테이너. `LLM_CLIENT=echo`(Slack·LLM 외부 호출 없음). 가벼운 기동은 호스트 1회·앱 2회(첫 앱 실행은 검증 도구의 컨테이너 요청기 버그 — 헤더 줄바꿈을 `printf %s`로 보내 글자 그대로 나감 — 로 실패해 고치고, 원인 확인용 디버그 세션 1회를 더 띄웠다). 합계 가벼운 기동 5/5(M44 1 포함), 소진 — M48의 n8n 기동은 L/M 결정 대상.
+
+**구현**: `build.gradle`에 actuator·micrometer-registry-prometheus. 역할·토큰·포트 도출은 `config/RoleWebTypePostProcessor`(토큰 없음→`management.server.port=-1`을 `addFirst`로 강제해 `MANAGEMENT_SERVER_PORT` relaxed binding으로 열리지 않음, CLI 역할은 토큰이 있어도 -1, 워커·반응은 토큰이 있으면 서블릿 타입+`server.port=-1`), 인증은 스캔 루트 밖 `com.slack.labmgmt.MetricsAuthFilter`(인증 먼저·GET 정확 경로 하나만·원문 URI 비교·SHA-256 다이제스트 상수 시간 비교)와 `ManagementSecurityConfiguration`(`@ManagementContextConfiguration(CHILD)`), 기동 거부는 `config/ManagementGuard`. 컨테이너는 `compose.yaml`에서 `MANAGEMENT_SERVER_ADDRESS=0.0.0.0`, 9091 게시 없음, 네트워크 `scrape`·`alerts` 정의(수신 `default+scrape+alerts`, 워커·반응 `default+scrape`). `env-check --monitoring --mode host|app|linux-host`, pre-commit이 `MANAGEMENT_METRICS_TOKEN=`·`GRAFANA_ADMIN_PASSWORD=` 값 줄을 막음. 코어 diff 0.
+
+**스파이크(R2)**: 스캔 루트 밖 `com.slack.labmgmt`의 CHILD 관리 설정은 주 컨텍스트가 줍지 않고 관리 컨텍스트에서만 로드됐다. `server.port=-1`인 워커·반응은 `Tomcat started on port -1`로 업무 리스너 없이 관리 포트만 열었다. 대안(업무 포트 `127.0.0.1:0`+404 필터)은 쓰지 않았다.
+
+| 합격선 | 결과 |
+|---|---|
+| C2(1) 세 역할 유효 토큰 200·role 태그 | 앱 모드 receiver·worker·reactor 각각 200, `role` 태그 `receiver`/`worker`/`reactor` 정확, 호스트(all)도 `role="all"` |
+| C2(2) 잘못된 인증 5회 401 | 호스트·앱 3역할 모두 5/5 (무토큰 5·오토큰 5) |
+| C2(3) 토큰 없으면 리스너 0·업무 포트 `/actuator/**` 404·`/health` 무변경 | 호스트·앱 모두 9091 연결 거부, 8080 `/actuator`·`/actuator/prometheus`·`/actuator/health` 404, `/health` 200 동일 |
+| C2(4) 코어 diff 0 | `scripts/core-diff-check` 0 |
+| C2(5) 토큰 없는 구성의 컨테이너 기동 | 앱 3역할 기동 성공·running 3·rabbitmq·postgres 도달(수신 `/health` 200) — `.env`를 건드리지 않고 컨테이너 환경에서 토큰을 빈 값으로 덮어 재현 |
+| C2(6) 토큰 설정 시 8080 업무 경로 동일 | `BusinessPortParityIT`: `/health`·`/slack/events`·`/alerts/*`·`/actuator/**`의 상태·본문(시각 마스킹)이 토큰 유무에 같음 |
+| C2(7) Ollama 모드 확인·웜업 로그 | M47로 이월(데코레이터 도입 시 재확인, 계획대로) |
+| C2(8) 8080·업무 포트 동일 거부, CLI 역할 | `ManagementGuardTest`·`BusinessPortParityIT`(기동 거부·사유에 토큰 값 없음), `ManagementServerTest`(recovery·indexer·evaluator는 토큰이 있어도 리스너 0·기동 성공) |
+| C3 무토큰·오토큰·회전 전 토큰 401, 새 토큰 200 | 호스트·앱 3역할 각 5/5 (회전 20/20) |
+| C3 비허용 경로·메서드 성공 0 | 경로 12종(`/actuator`, `/health`, `/env`, `/configprops`, `/heapdump`, `/threaddump`, `/prometheus/../env`, `%2e%2e`·`;` 변형, `/`)×5 + 메서드 POST·PUT·DELETE·OPTIONS·HEAD×5 = 85건, 2xx·3xx 0 (원문 요청 — `--path-as-is`와 같음) |
+| C3 리스너 | 호스트 9091 LISTEN은 `127.0.0.1`만, 앱은 호스트 게시 0·`network_mode: host` 0·호스트 9091 리스너 0 |
+| C3 `env-check` | 토큰 누락·형식·재사용(알람·Grafana·Slack·Postgres)·바인딩(호스트 `0.0.0.0`/`::`)·관리 포트 8080/`RECEIVER_PORT` 동일 거부, 비밀 출력 0 (`test_env_check.py` 75건, PATH·`/usr/bin/python3` 양쪽) |
+| C3 **LAN 외부 접근(H1)** | **H1 대기** — 사용자가 다른 장비에서 실행(아래 안내) |
+
+**회전(G-8 기본안)**: 이 도구가 만든 일회용 새 토큰을 호스트 모드는 저장소 밖 `~/.slack-lab-secrets`의 600 파일로(출력 없이), 앱 모드는 프로세스 환경으로만 넘기고 끝나면 지웠다(파일 0 확인). 회전 전 토큰은 401, 새 토큰은 200이었다. 사람이 `.env`를 바꾸는 회전(H2b)은 G-8에서 사람 회전을 고르지 않아 수행하지 않았다.
+
+**검증 중 발견**: ① `/health` 직후 빈 `curl` 대신 raw 소켓으로 보내 정규화 없는 경로를 시험(`..`·`%2e`·`;`) ② bash `/dev/tcp` 요청기에서 `printf %s`는 변수 안 `\r\n`을 글자 그대로 보내므로 `%b`로 바꿔야 한다 ③ 첫 `./gradlew build`의 `RabbitPipelineIT`가 컨테이너 시작 대기(로그 대기 시간 초과)로 한 번 실패했고 단독 재실행·전체 재실행에서는 통과했다(환경 요인, 코드 무관) ④ iCloud가 `build/classes/java/main/META-INF 2` 빈 폴더 복제본을 또 만들어 빈 것만 지웠다.
+
+**H1 안내(사용자 단계)**: 호스트(이 노트북)의 LAN 주소를 확인한다 — `ipconfig getifaddr en0`(IPv4), IPv6는 `ifconfig en0 | grep inet6`의 글로벌 주소(없으면 "해당 없음"). 이 접근 시험은 호스트 앱이 떠 있어야 의미가 있으므로, 사용자 신호("준비됨") 뒤에 Claude가 전용 세션으로 호스트 앱을 `127.0.0.1:9091`에 띄워 두고(이때 가벼운 기동이 한 번 더 필요해 L/M 결정 대상이다), **다른 장비**의 터미널에서 각 주소로 5회씩 실행해 결과(HTTP 코드 또는 연결 실패)만 전달한다. 토큰 값은 대화에 적지 않는다(자리표시자 `<토큰>`):
+
+`for i in 1 2 3 4 5; do curl -s -m 5 -o /dev/null -w '%{http_code}\n' -H 'Authorization: Bearer <토큰>' http://<노트북 IPv4>:9091/actuator/prometheus; done` (IPv6는 `http://[<노트북 IPv6>]:9091/...`)
+
+기대: 호스트 기본 바인딩(`127.0.0.1`)이면 **5회 모두 연결 실패(성공 0)**. 컨테이너 모드는 9091을 게시하지 않으므로 호스트 주소로는 어차피 닿지 않는다.
+

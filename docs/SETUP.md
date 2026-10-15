@@ -56,6 +56,17 @@ ngrok http 8080                                   # 별도 터미널, 나온 htt
 2. 채널에서 `@slack-lab 안녕` 처럼 멘션한다.
 3. 기대 결과: 멘션에 **👀 반응 1개**, **스레드 답글 1개**. 첫 호출은 모델 적재로 느릴 수 있다.
 
+## 모니터링 지표 켜기 (선택, 6단계)
+
+기본 구성에서는 꺼져 있고, 안 켜도 앱은 5단계와 똑같이 동작한다. 지표(Prometheus 형식)를 내보내려면 `.env`에 아래 두 키를 **직접** 넣는다. 값은 이 저장소 어디에도 커밋하지 않는다(`.githooks/pre-commit`이 값이 있는 줄을 막는다).
+
+- `MANAGEMENT_METRICS_TOKEN`: `openssl rand -hex 32`로 만든 64자리 16진수. `ALERT_SECRET`·Slack 비밀·Grafana 비밀번호와 **다른 값**이어야 한다.
+- `GRAFANA_ADMIN_PASSWORD`: Grafana 관리자 비밀번호(8자 이상, `admin` 같은 기본값 금지).
+
+넣은 뒤 `scripts/env-check --monitoring [--mode host|app]`로 형식을 점검한다(값은 출력하지 않는다). 토큰이 있으면 앱이 **별도 관리 포트 9091**에서 `GET /actuator/prometheus`를 `Authorization: Bearer <토큰>`으로만 내보낸다. 호스트에서 `bootRun`하면 `127.0.0.1`에만 열리고, 컨테이너(`--profile app`)는 9091을 호스트에 게시하지 않는다. 토큰을 지우면 관리 포트는 열리지 않는다. 8080(수신)과 같은 포트로 설정하면 기동이 거부된다.
+
+모니터링 도구가 만드는 비밀 파일(토큰 회전 시험 등)은 저장소 **밖** `~/.slack-lab-secrets`(권한 600)에 둔다. 저장소가 iCloud 같은 동기화 폴더 안에 있을 수 있어 `.runtime/` 아래에는 비밀을 두지 않는다. 위치를 바꾸려면 `SLACK_LAB_SECRET_DIR`을 지정한다.
+
 ## 막혔을 때
 
 | 증상 | 확인 |

@@ -1,0 +1,558 @@
+#!/usr/bin/env python3
+"""6단계 모니터링 검증 도구. M45에서는 `mgmt` 하위 명령만 있다(이후 마일스톤이 spike·provision·run 등을 더한다).
+
+사용: scripts/monitoring-verify mgmt --mode host|app [--id <기동 ID>] [--keep-volumes]
+
+기동 한 번(`s6-session`의 전용 compose 프로젝트)을 스스로 열고 닫는다. 비밀(관리 토큰)은 `.env`에서 메모리로만 읽고 어떤 출력·결과 파일에도
+쓰지 않는다. 회전 시험(G-8 기본안)의 새 토큰은 이 도구가 만들어 저장소 밖 600 파일(호스트 모드) 또는 프로세스 환경(앱 모드)으로만 넘기고,
+끝나면 파일을 지운다. 출력은 항목별 PASS/FAIL과 개수뿐이다.
+
+판정(계획 C2·C3, 실행 방식마다):
+  C2(3)(5) 토큰이 없으면 관리 리스너 0·업무 포트 /actuator/** 404·기동 거부 0
+  C2(1)(2) 유효 토큰 200(role 태그가 역할별로 존재)·잘못된/없는 인증 5회 모두 401
+  C3       무토큰·오토큰·회전 전 토큰 각 5회 401, 새 토큰 5회 200, 비허용 경로·메서드 각 5회 성공(2xx·3xx) 0,
+           리스너 검사(호스트: 9091은 127.0.0.1만 / 앱: 호스트 게시 0·network_mode host 0)
+외부 장비에서 LAN 주소로 접근하는 항목(H1)은 이 도구가 하지 않는다 — 사람 단계다.
+종료 코드: 0 전부 통과, 1 실패 항목 있음(또는 환경 문제), 2 사용법 오류.
+"""
+import json
+import os
+import secrets
+import socket
+import stat
+import subprocess
+import sys
+import time
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+S6 = os.path.join(ROOT, "scripts", "s6-session")
+REPEAT = 5
+MGMT_PORT = 9091
+def _env_file_value(key):
+    path = os.path.join(ROOT, ".env")
+    value = ""
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(f"{key}=") and not line.startswith("#"):
+                    value = line.split("=", 1)[1].strip().strip('"').strip("'")
+    return value
+
+
+BUSINESS_PORT = int(os.environ.get("RECEIVER_PORT") or _env_file_value("RECEIVER_PORT") or 8080)
+
+# 비허용 경로(원문 그대로 보낸다 — curl --path-as-is와 같다)와 비허용 메서드
+DISALLOWED_PATHS = [
+    "/actuator", "/actuator/health", "/actuator/env", "/actuator/configprops", "/actuator/heapdump",
+    "/actuator/threaddump", "/actuator/prometheus/../env", "/actuator/prometheus/%2e%2e/env",
+    "/actuator/%2e%2e/actuator/env", "/actuator/prometheus;/../env", "/actuator/prometheus/..;/env", "/",
+]
+DISALLOWED_METHODS = ["POST", "PUT", "DELETE", "OPTIONS", "HEAD"]
+
+
+# ---------------------------------------------------------------------------------------------------------
+# 순수 함수(단위 시험 대상)
+# ---------------------------------------------------------------------------------------------------------
+def read_token(env_path):
+    """`.env`에서 관리 토큰만 읽는다(없으면 빈 문자열). 값은 호출자가 출력하지 않는다."""
+    if not os.path.isfile(env_path):
+        return ""
+    with open(env_path, encoding="utf-8", errors="replace") as f:
+        value = ""
+        for line in f:
+            line = line.strip()
+            if line.startswith("export "):
+                line = line[7:].lstrip()
+            if line.startswith("MANAGEMENT_METRICS_TOKEN=") and not line.startswith("#"):
+                value = line.split("=", 1)[1].strip().strip('"').strip("'")
+        return value
+
+
+def new_token():
+    return secrets.token_hex(32)
+
+
+def classify(expect, status):
+    """expect: 'ok'(200) | 'deny'(401) | 'no_success'(2xx·3xx가 아님). status는 문자열 상태 코드 또는 'ERR'."""
+    if expect == "ok":
+        return status == "200"
+    if expect == "deny":
+        return status == "401"
+    if expect == "no_success":
+        return not (status.startswith("2") or status.startswith("3"))
+    raise ValueError(expect)
+
+
+def build_token_cases(host, port, valid, old=None, repeat=REPEAT):
+    """(이름, host, port, method, path, 인증 헤더 값, 기대) 목록. 이름에는 비밀이 들어가지 않는다."""
+    cases = []
+    path = "/actuator/prometheus"
+    for i in range(repeat):
+        cases.append((f"유효 토큰 200 #{i + 1}", host, port, "GET", path, f"Bearer {valid}", "ok"))
+        cases.append((f"토큰 없음 401 #{i + 1}", host, port, "GET", path, "", "deny"))
+        cases.append((f"잘못된 토큰 401 #{i + 1}", host, port, "GET", path, "Bearer " + secrets.token_hex(32), "deny"))
+        if old:
+            cases.append((f"회전 전 토큰 401 #{i + 1}", host, port, "GET", path, f"Bearer {old}", "deny"))
+    return cases
+
+
+def build_deny_cases(host, port, valid, repeat=REPEAT):
+    cases = []
+    for p in DISALLOWED_PATHS:
+        for i in range(repeat):
+            cases.append((f"비허용 경로 {p} #{i + 1}", host, port, "GET", p, f"Bearer {valid}", "no_success"))
+    for m in DISALLOWED_METHODS:
+        for i in range(repeat):
+            cases.append((f"비허용 메서드 {m} #{i + 1}", host, port, m, "/actuator/prometheus", f"Bearer {valid}",
+                          "no_success"))
+    return cases
+
+
+def summarize(results):
+    """results: [(이름, 기대, 상태)] → (통과 수, 실패 목록). 실패 이름에는 비밀이 없다."""
+    failed = []
+    ok = 0
+    for name, expect, status in results:
+        if classify(expect, status):
+            ok += 1
+        else:
+            failed.append(f"{name} (기대 {expect}, 응답 {status})")
+    return ok, failed
+
+
+def listener_findings(lsof_output, port, allowed_prefixes):
+    """lsof -nP -iTCP:<port> -sTCP:LISTEN 출력에서 허용되지 않은 바인딩 주소를 돌려준다."""
+    bad = []
+    for line in lsof_output.splitlines():
+        if "LISTEN" not in line:
+            continue
+        name = [t for t in line.split() if f":{port}" in t]
+        if not name:
+            continue
+        addr = name[0]
+        if not any(addr.startswith(p) for p in allowed_prefixes):
+            bad.append(addr)
+    return bad
+
+
+def pick_jar(libs_dir):
+    jars = [f for f in sorted(os.listdir(libs_dir)) if f.endswith(".jar") and not f.endswith("-plain.jar")]
+    return os.path.join(libs_dir, jars[-1]) if jars else None
+
+
+# ---------------------------------------------------------------------------------------------------------
+# 요청 전송
+# ---------------------------------------------------------------------------------------------------------
+def raw_status(host, port, method, path, auth, timeout=5.0):
+    """정규화 없이 원문 요청 한 건을 보내고 상태 코드를 돌려준다(연결 실패는 'ERR')."""
+    req = f"{method} {path} HTTP/1.1\r\nHost: {host}\r\n"
+    if auth:
+        req += f"Authorization: {auth}\r\n"
+    req += "Connection: close\r\n\r\n"
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            s.sendall(req.encode("ascii"))
+            data = b""
+            while b"\r\n" not in data:
+                chunk = s.recv(256)
+                if not chunk:
+                    break
+                data += chunk
+        line = data.split(b"\r\n", 1)[0].decode("ascii", "replace")
+        parts = line.split()
+        return parts[1] if len(parts) >= 2 and parts[1].isdigit() else "ERR"
+    except OSError:
+        return "ERR"
+
+
+def fetch_roles(host, port, token, timeout=5.0):
+    """지표 본문에서 role 태그 값 집합을 정렬해 돌려준다(본문은 저장·출력하지 않는다)."""
+    import re
+    req = (f"GET /actuator/prometheus HTTP/1.1\r\nHost: {host}\r\nAuthorization: Bearer {token}\r\n"
+           "Connection: close\r\n\r\n")
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as s:
+            s.sendall(req.encode("ascii"))
+            data = b""
+            while True:
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+    except OSError:
+        return []
+    return sorted(set(re.findall(r'role="([a-z_]+)"', data.decode("utf-8", "replace"))))
+
+
+# 컨테이너 안에서 실행하는 요청기: 앱 이미지(Ubuntu 기반 JRE)에는 curl이 없지만 bash가 있으므로 /dev/tcp로 원문 요청을 보낸다.
+# 케이스는 표준 입력으로만 받는다(토큰이 argv·프로세스 목록에 남지 않게).
+CONTAINER_REQUESTER = r'''
+while IFS='|' read -r h p m u a; do
+  if ! exec 3<>"/dev/tcp/$h/$p" 2>/dev/null; then echo ERR; continue; fi
+  if [ -n "$a" ]; then hdr="Authorization: $a\r\n"; else hdr=""; fi
+  # 헤더 줄바꿈은 %b로 해석한다(%s는 변수 안의 \r\n을 글자 그대로 보낸다)
+  printf "%s %s HTTP/1.1\r\nHost: %s\r\n%bConnection: close\r\n\r\n" "$m" "$u" "$h" "$hdr" >&3
+  IFS= read -r line <&3
+  code="${line:9:3}"
+  case "$code" in [0-9][0-9][0-9]) echo "$code";; *) echo ERR;; esac
+  exec 3<&-
+done
+'''
+ROLE_REQUESTER = r'''
+while IFS='|' read -r h p a; do
+  if ! exec 3<>"/dev/tcp/$h/$p" 2>/dev/null; then echo ERR; continue; fi
+  printf "GET /actuator/prometheus HTTP/1.1\r\nHost: %s\r\nAuthorization: %s\r\nConnection: close\r\n\r\n" "$h" "$a" >&3
+  cat <&3 | grep -o 'role="[a-z_]*"' | sort -u | head -1
+  exec 3<&-
+done
+'''
+
+
+def exec_statuses(project, service, cases, files):
+    """컨테이너 안에서 케이스를 보내고 상태 코드를 같은 순서로 돌려준다."""
+    stdin = "".join(f"{h}|{p}|{m}|{u}|{a}\n" for (_n, h, p, m, u, a, _e) in cases)
+    cmd = ["docker", "compose", "-p", project, *files, "--profile", "app", "exec", "-T", service, "bash", "-c",
+           CONTAINER_REQUESTER]
+    p = subprocess.run(cmd, cwd=ROOT, input=stdin, capture_output=True, text=True)
+    out = p.stdout.split()
+    return out if len(out) == len(cases) else ["ERR"] * len(cases)
+
+
+def exec_roles(project, service, targets, files):
+    """targets: [(host, port, 인증값)] → role 태그(예: role="worker") 목록."""
+    stdin = "".join(f"{h}|{p}|{a}\n" for (h, p, a) in targets)
+    cmd = ["docker", "compose", "-p", project, *files, "--profile", "app", "exec", "-T", service, "bash", "-c",
+           ROLE_REQUESTER]
+    p = subprocess.run(cmd, cwd=ROOT, input=stdin, capture_output=True, text=True)
+    lines = [x for x in p.stdout.splitlines()]
+    return lines
+
+
+# ---------------------------------------------------------------------------------------------------------
+# 세션 보조
+# ---------------------------------------------------------------------------------------------------------
+class Report:
+    def __init__(self):
+        self.rows = []
+
+    def add(self, name, ok, detail=""):
+        self.rows.append({"name": name, "ok": bool(ok), "detail": detail})
+        print(("PASS " if ok else "FAIL ") + name + ("" if ok or not detail else f" — {detail}"))
+        sys.stdout.flush()
+
+    @property
+    def ok(self):
+        return all(r["ok"] for r in self.rows)
+
+
+def s6(*args, check=True):
+    p = subprocess.run([S6, *args], cwd=ROOT, capture_output=True, text=True)
+    if check and p.returncode != 0:
+        raise RuntimeError(f"s6-session {args[0]} 실패: {(p.stdout + p.stderr).strip()[:300]}")
+    return p
+
+
+def secret_dir():
+    d = os.environ.get("SLACK_LAB_SECRET_DIR") or os.path.expanduser("~/.slack-lab-secrets")
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)
+    return d
+
+
+def write_secret_env(directory, name, key, value):
+    """저장소 밖 600 파일에 KEY=VALUE를 쓴다. 값은 출력하지 않는다."""
+    path = os.path.join(directory, name)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(f"{key}={value}\n")
+    os.chmod(path, 0o600)
+    return path
+
+
+def wait_until(predicate, timeout, interval=1.0):
+    end = time.time() + timeout
+    while time.time() < end:
+        if predicate():
+            return True
+        time.sleep(interval)
+    return False
+
+
+def lsof_listen(port):
+    p = subprocess.run(["lsof", "-nP", f"-iTCP:{port}", "-sTCP:LISTEN"], capture_output=True, text=True)
+    return p.stdout
+
+
+def judge_cases(rep, title, cases, statuses):
+    results = [(n, e, s) for (n, _h, _p, _m, _u, _a, e), s in zip(cases, statuses)]
+    ok, failed = summarize(results)
+    rep.add(f"{title} {ok}/{len(results)}", not failed, "; ".join(failed[:5]))
+
+
+# ---------------------------------------------------------------------------------------------------------
+# 호스트 모드
+# ---------------------------------------------------------------------------------------------------------
+def host_health(timeout=90):
+    return wait_until(lambda: raw_status("127.0.0.1", BUSINESS_PORT, "GET", "/health", "") == "200", timeout, 2.0)
+
+
+def spawn_app(sdir, jar, env_files, extra_env=None, name="app"):
+    args = [S6, "spawn", "--session", sdir, "--name", name]
+    for f in env_files:
+        args += ["--env-file", f]
+    for k, v in (extra_env or {}).items():
+        args += ["--env", f"{k}={v}"]  # 비밀이 아닌 값만 argv로 보낸다
+    args += ["--", "java", "-jar", jar]
+    p = subprocess.run(args, cwd=ROOT, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise RuntimeError("앱 기동 실패: " + p.stderr.strip()[:200])
+    return int(p.stdout.strip())
+
+
+def stop_pid(pid):
+    import signal
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    wait_until(lambda: subprocess.run(["kill", "-0", str(pid)], capture_output=True).returncode != 0, 15, 0.5)
+
+
+def run_host(rep, sid, keep):
+    env_path = os.path.join(ROOT, ".env")
+    token = read_token(env_path)
+    if not token:
+        rep.add("사전 조건: .env에 MANAGEMENT_METRICS_TOKEN", False, "H2a 값이 필요하다")
+        return
+    sdir = s6("start", "--id", sid, *(["--keep-volumes"] if keep else [])).stdout.strip()
+    rotation_file = None
+    try:
+        build = subprocess.run([os.path.join(ROOT, "gradlew"), "bootJar", "-x", "test", "-q"], cwd=ROOT,
+                               capture_output=True, text=True)
+        jar = pick_jar(os.path.join(ROOT, "build", "libs"))
+        rep.add("bootJar 빌드", build.returncode == 0 and jar, build.stderr.strip()[:200])
+        if not jar:
+            return
+        s6("compose", "--session", sdir, "--", "up", "-d", "--wait", "rabbitmq", "postgres")
+        base_env = {"APP_ROLE": "all", "LLM_CLIENT": "echo", "RAG_ENABLED": "false", "CLASSIFICATION_ENABLED": "false"}
+
+        # A. 토큰 없음: 같은 앱을 빈 토큰으로 띄운다
+        pid = spawn_app(sdir, jar, [env_path], {**base_env, "MANAGEMENT_METRICS_TOKEN": ""}, "app-tokenless")
+        up = host_health()
+        rep.add("[토큰 없음] 기동·/health 200", up)
+        if up:
+            rep.add("[토큰 없음] 관리 리스너 0", not lsof_listen(MGMT_PORT).strip(), "9091 LISTEN 있음")
+            no_ep = [raw_status("127.0.0.1", BUSINESS_PORT, "GET", p, "") for p in
+                     ("/actuator", "/actuator/prometheus", "/actuator/health", "/actuator/env")]
+            rep.add("[토큰 없음] 업무 포트 /actuator/** 404", all(s == "404" for s in no_ep), str(no_ep))
+            health_without = raw_status("127.0.0.1", BUSINESS_PORT, "GET", "/health", "")
+        stop_pid(pid)
+        wait_until(lambda: not lsof_listen(BUSINESS_PORT).strip(), 20, 1.0)
+
+        # B. 토큰 있음
+        pid = spawn_app(sdir, jar, [env_path], base_env, "app-token")
+        up = host_health()
+        rep.add("[토큰] 기동·/health 200", up)
+        if up:
+            rep.add("[토큰] 업무 포트 /health 상태가 무토큰과 동일", raw_status("127.0.0.1", BUSINESS_PORT, "GET", "/health", "")
+                    == health_without)
+            rep.add("[토큰] 업무 포트 /actuator/** 404",
+                    all(raw_status("127.0.0.1", BUSINESS_PORT, "GET", p, f"Bearer {token}") == "404"
+                        for p in ("/actuator", "/actuator/prometheus")))
+            ready = wait_until(lambda: raw_status("127.0.0.1", MGMT_PORT, "GET", "/actuator/prometheus",
+                                                  f"Bearer {token}") == "200", 30, 1.0)
+            rep.add("[토큰] 관리 포트 응답", ready)
+            cases = build_token_cases("127.0.0.1", MGMT_PORT, token) + build_deny_cases("127.0.0.1", MGMT_PORT, token)
+            statuses = [raw_status(h, p, m, u, a) for (_n, h, p, m, u, a, _e) in cases]
+            judge_cases(rep, "[토큰] 인증·비허용 경로·메서드", cases, statuses)
+            bad = listener_findings(lsof_listen(MGMT_PORT), MGMT_PORT, ["127.0.0.1:", "[::1]:", "localhost:"])
+            rep.add("[토큰] 9091 LISTEN은 127.0.0.1만", bool(lsof_listen(MGMT_PORT).strip()) and not bad, ", ".join(bad))
+            role = ",".join(fetch_roles("127.0.0.1", MGMT_PORT, token))
+            rep.add("[토큰] role 태그 존재(all)", role == "all", role)
+
+            # C. 회전(G-8 기본안): 새 토큰은 저장소 밖 600 파일로만 넘기고 끝나면 지운다
+            stop_pid(pid)
+            wait_until(lambda: not lsof_listen(MGMT_PORT).strip(), 20, 1.0)
+            fresh = new_token()
+            rotation_file = write_secret_env(secret_dir(), f"mgmt-rotation-{sid}.env", "MANAGEMENT_METRICS_TOKEN", fresh)
+            mode = stat.S_IMODE(os.stat(rotation_file).st_mode)
+            rep.add("[회전] 새 토큰 파일 권한 600·저장소 밖", mode == 0o600 and not os.path.abspath(rotation_file).startswith(ROOT))
+            pid = spawn_app(sdir, jar, [env_path, rotation_file], base_env, "app-rotated")
+            ready = wait_until(lambda: raw_status("127.0.0.1", MGMT_PORT, "GET", "/actuator/prometheus",
+                                                  f"Bearer {fresh}") == "200", 90, 2.0)
+            rep.add("[회전] 새 토큰으로 관리 포트 응답", ready)
+            if ready:
+                cases = build_token_cases("127.0.0.1", MGMT_PORT, fresh, old=token)
+                statuses = [raw_status(h, p, m, u, a) for (_n, h, p, m, u, a, _e) in cases]
+                judge_cases(rep, "[회전] 새 토큰 200·무토큰/오토큰/회전 전 토큰 401", cases, statuses)
+    finally:
+        if rotation_file and os.path.exists(rotation_file):
+            os.remove(rotation_file)
+        if rotation_file:
+            rep.add("[회전] 새 토큰 파일 삭제", not os.path.exists(rotation_file))
+        p = s6("teardown", "--session", sdir, check=False)
+        rep.add("teardown 최종 확인", p.returncode == 0, (p.stdout + p.stderr).strip()[:300])
+
+
+# ---------------------------------------------------------------------------------------------------------
+# 앱(컨테이너) 모드
+# ---------------------------------------------------------------------------------------------------------
+OVERRIDE_BASE = """services:
+  receiver: &o
+    environment:
+      LLM_CLIENT: echo
+      RAG_ENABLED: "false"
+      CLASSIFICATION_ENABLED: "false"{extra}
+  worker:
+    environment:
+      LLM_CLIENT: echo
+      RAG_ENABLED: "false"
+      CLASSIFICATION_ENABLED: "false"{extra}
+  reactor:
+    environment:
+      LLM_CLIENT: echo
+      RAG_ENABLED: "false"
+      CLASSIFICATION_ENABLED: "false"{extra}
+"""
+SERVICES = ("receiver", "worker", "reactor")
+
+
+def write_override(sdir, name, extra_lines):
+    extra = "".join(f"\n      {l}" for l in extra_lines)
+    path = os.path.join(sdir, name)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(OVERRIDE_BASE.format(extra=extra))
+    return path
+
+
+def running_services(project, files):
+    p = subprocess.run(["docker", "compose", "-p", project, *files, "--profile", "app", "ps", "--format", "json"],
+                       cwd=ROOT, capture_output=True, text=True)
+    rows = []
+    for line in p.stdout.splitlines():
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            pass
+    return rows
+
+
+def run_app(rep, sid, keep):
+    env_path = os.path.join(ROOT, ".env")
+    token = read_token(env_path)
+    if not token:
+        rep.add("사전 조건: .env에 MANAGEMENT_METRICS_TOKEN", False, "H2a 값이 필요하다")
+        return
+    sdir = s6("start", "--id", sid, *(["--keep-volumes"] if keep else [])).stdout.strip()
+    project = json.load(open(os.path.join(sdir, "ledger.json")))["project"]
+    ov_none = write_override(sdir, "override-tokenless.yaml", ['MANAGEMENT_METRICS_TOKEN: ""'])
+    ov_token = write_override(sdir, "override-token.yaml", [])
+    ov_rot = write_override(sdir, "override-rotated.yaml", ['MANAGEMENT_METRICS_TOKEN: "${S6_ROTATED_TOKEN}"'])
+    try:
+        def up(ov):
+            return s6("compose", "--session", sdir, "--", "-f", "compose.yaml", "-f", ov, "--profile", "app", "up", "-d",
+                      "--build" if ov == ov_none else "--no-build", "--force-recreate", "--wait", *SERVICES, check=False)
+
+        files_for = lambda ov: ["-f", "compose.yaml", "-f", ov]
+
+        # A. 토큰 없는 구성
+        p = up(ov_none)
+        rep.add("[토큰 없음] 앱 3역할 기동 성공(기동 거부 0)", p.returncode == 0, (p.stdout + p.stderr).strip()[-300:])
+        rows = running_services(project, files_for(ov_none))
+        rep.add("[토큰 없음] 3역할 running", sum(1 for r in rows if r.get("Service") in SERVICES
+                                              and r.get("State") == "running") == 3, str([(r.get("Service"), r.get("State")) for r in rows]))
+        c = [(f"{s} 관리 리스너 없음", s, MGMT_PORT, "GET", "/actuator/prometheus", "", "no_success") for s in SERVICES]
+        st = exec_statuses(project, "receiver", c, files_for(ov_none))
+        rep.add("[토큰 없음] 3역할 9091 연결 거부(관리 리스너 0)", all(x == "ERR" for x in st), str(st))
+        wait_until(lambda: raw_status("127.0.0.1", BUSINESS_PORT, "GET", "/health", "") == "200", 90, 2.0)
+        biz = [raw_status("127.0.0.1", BUSINESS_PORT, "GET", p_, "") for p_ in ("/health", "/actuator", "/actuator/prometheus")]
+        rep.add("[토큰 없음] 수신 /health 200·/actuator/** 404", biz[0] == "200" and biz[1] == "404" and biz[2] == "404", str(biz))
+
+        # B. 토큰 있는 구성(.env의 토큰)
+        p = up(ov_token)
+        rep.add("[토큰] 앱 3역할 기동 성공", p.returncode == 0, (p.stdout + p.stderr).strip()[-300:])
+        ready = wait_until(lambda: exec_statuses(project, "receiver", [("r", "worker", MGMT_PORT, "GET", "/actuator/prometheus",
+                           f"Bearer {token}", "ok")], files_for(ov_token)) == ["200"], 60, 2.0)
+        rep.add("[토큰] 관리 포트 응답", ready)
+        if ready:
+            for svc in SERVICES:
+                cases = build_token_cases(svc, MGMT_PORT, token) + build_deny_cases(svc, MGMT_PORT, token)
+                st = exec_statuses(project, "receiver", cases, files_for(ov_token))
+                judge_cases(rep, f"[토큰] {svc} 인증·비허용 경로·메서드", cases, st)
+            roles = exec_roles(project, "receiver", [(s, MGMT_PORT, f"Bearer {token}") for s in SERVICES], files_for(ov_token))
+            rep.add("[토큰] role 태그가 역할별로 존재", roles == [f'role="{s}"' for s in SERVICES], str(roles))
+            wait_until(lambda: raw_status("127.0.0.1", BUSINESS_PORT, "GET", "/health", "") == "200", 60, 2.0)
+            biz = [raw_status("127.0.0.1", BUSINESS_PORT, "GET", "/health", ""),
+                   raw_status("127.0.0.1", BUSINESS_PORT, "GET", "/actuator/prometheus", f"Bearer {token}")]
+            rep.add("[토큰] 업무 포트 /health 200·/actuator/** 404", biz == ["200", "404"], str(biz))
+            cfg = subprocess.run(["docker", "compose", "-p", project, *files_for(ov_token), "--profile", "app", "config",
+                                  "--format", "json"], cwd=ROOT, capture_output=True, text=True)
+            try:
+                services = json.loads(cfg.stdout)["services"]
+                published = [str(pp.get("published")) for s in SERVICES for pp in services[s].get("ports", [])]
+                host_net = [s for s in SERVICES if services[s].get("network_mode") == "host"]
+                rep.add("[토큰] 9091 호스트 게시 0·network_mode host 0", str(MGMT_PORT) not in published and not host_net,
+                        f"published={published} host={host_net}")
+            except (ValueError, KeyError) as e:
+                rep.add("[토큰] compose config 파싱", False, str(e))
+            rep.add("[토큰] 호스트 9091 리스너 0", not lsof_listen(MGMT_PORT).strip())
+
+            # C. 회전
+            fresh = new_token()
+            os.environ["S6_ROTATED_TOKEN"] = fresh
+            p = up(ov_rot)
+            rep.add("[회전] 새 토큰으로 재기동", p.returncode == 0, (p.stdout + p.stderr).strip()[-300:])
+            ready = wait_until(lambda: exec_statuses(project, "receiver", [("r", "worker", MGMT_PORT, "GET",
+                               "/actuator/prometheus", f"Bearer {fresh}", "ok")], files_for(ov_rot)) == ["200"], 60, 2.0)
+            rep.add("[회전] 새 토큰으로 관리 포트 응답", ready)
+            if ready:
+                for svc in SERVICES:
+                    cases = build_token_cases(svc, MGMT_PORT, fresh, old=token)
+                    st = exec_statuses(project, "receiver", cases, files_for(ov_rot))
+                    judge_cases(rep, f"[회전] {svc} 새 토큰 200·무토큰/오토큰/회전 전 토큰 401", cases, st)
+    finally:
+        os.environ.pop("S6_ROTATED_TOKEN", None)
+        p = s6("teardown", "--session", sdir, check=False)
+        rep.add("teardown 최종 확인", p.returncode == 0, (p.stdout + p.stderr).strip()[:300])
+
+
+def cmd_mgmt(argv):
+    mode, sid, keep = None, None, False
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--mode" and i + 1 < len(argv) and argv[i + 1] in ("host", "app"):
+            mode, i = argv[i + 1], i + 2
+        elif argv[i] == "--id" and i + 1 < len(argv):
+            sid, i = argv[i + 1], i + 2
+        elif argv[i] == "--keep-volumes":
+            keep, i = True, i + 1
+        else:
+            print(__doc__.split("\n\n")[1], file=sys.stderr)
+            return 2
+    if not mode:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    sid = sid or f"m45-{mode}"
+    rep = Report()
+    try:
+        (run_host if mode == "host" else run_app)(rep, sid, keep)
+    except Exception as e:  # noqa: BLE001 — 어떤 실패도 비밀 없이 사유만 남기고 종료 확인으로 간다
+        rep.add("검증 중단", False, f"{type(e).__name__}: {str(e)[:200]}")
+    print(f"결과: {'통과' if rep.ok else '실패'} ({sum(r['ok'] for r in rep.rows)}/{len(rep.rows)})")
+    out = os.environ.get("MONITORING_VERIFY_OUT")
+    if out:
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(rep.rows, f, ensure_ascii=False, indent=2)
+    return 0 if rep.ok else 1
+
+
+def main(argv):
+    if not argv or argv[0] != "mgmt":
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    return cmd_mgmt(argv[1:])
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

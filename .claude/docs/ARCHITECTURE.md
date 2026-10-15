@@ -543,6 +543,17 @@ Redis 어댑터·Lua·`spring-boot-starter-data-redis`를 제거했다. 백엔�
 - **대가**: 호출 +1(웜 p95 412ms), 3b의 정보 부족 재현율이 낮다(final 12/20, tuning 5/10) — 틀리면 장애 질문으로 가서 되묻기가 줄 뿐 오답 방향이 안전하다. 장애 질문 안의 무관 문서 주입(평균 1건)은 해결하지 못한다. 첫 호출 콜드 로드(4.6~5.9s)는 기동 확인(`probe`)과 `keep_alive` 30분으로 흡수한다. 분리 구성의 이득은 메모리가 더 큰 장비에서만 기대할 수 있다.
 - **후속**: 질의 재작성(스레드 후속의 약한 검색 질의), 분류 결과 영속화, 정보 부족 정확도 개선(모델 상향 또는 예시), 5단계 지표.
 
+### ADR-11 · 선택형 모니터링 스택을 도입하고, 5단계의 "지표 라이브러리 기각"을 대체한다 (2026-10-14, 6단계 M45 초안)
+
+> 초안: M45에서 관리 서버·인증까지 적었다. 스택·소속표·알람 리터럴·스파이크 결과는 M46에서 보강한다.
+
+- **결정**: 6단계는 (1) stdout 한 줄 JSON 로그 + 회전 파일(M44), (2) Micrometer 지표를 **역할·토큰으로 켜지는 별도 관리 서버**로 내보내고(M45), (3) 선택 프로필 `compose.monitoring.yaml`(Loki·Grafana·Prometheus·Alloy)과 (4) Grafana 알람 → `POST /alerts/grafana` 입력 어댑터로 이어 붙인다. 도구 교체는 새 포트가 아니라 **Micrometer·stdout 로그·`/alerts/{source}` 어댑터**라는 기존 경계로 한다. `core/` 변경은 0이다.
+- **대체하는 것**: 5단계의 "Actuator/Micrometer 기각"(`PLAN.md` 5단계 ADR 요약)과 `BacklogReporter`·§5.1 표의 "지표 라이브러리를 도입하지 않는다" 문구. 기각 이유였던 상주 비용은 이제 **opt-in**이다 — 토큰이 없으면 관리 리스너 0·추가 컨테이너 0이고, 의존성(actuator·micrometer-registry-prometheus) 추가 비용만 남는다. (`BacklogReporter.java:13-14` 코어 주석은 코어 diff 0 때문에 이 단계에서 고치지 않는다.)
+- **동인**: 오픈소스로 공개했을 때 학생·개인 개발자가 쓰는 도구와 맞는 관측성(Prometheus/Loki/Grafana), 기본 스택 무영향, 코어 경계 유지(ADR-9).
+- **대안**: ①Boot 기본 actuator 엔드포인트를 업무 포트에 노출 — 8080이 ngrok에 공개되어 기각. ②관리 서버 없이 pushgateway/OTLP — 상주 컴포넌트가 늘어 기각. ③관리 인증을 Spring Security로 — 의존성이 크고 스캔 루트 규칙 위반 위험, 필터 하나로 충분해 기각.
+- **대가**: 의존성 2개 추가(actuator·registry), 관리 서버 설정 조합(역할×토큰×포트) 검증 비용, 컨테이너 모드에서 `0.0.0.0` 바인딩(게시 없음·네트워크 격리로 방어).
+- **후속**: M46 스택·소속표·알람 리터럴·스파이크 결과, M47 `/alerts/grafana`, 7단계 Anthropic(ADR-12).
+
 ### ADR-6 · 프로토타입은 폐기하고 지식만 승계한다
 
 문서 없이 먼저 만든 프로토타입이 있었다. `./gradlew build` · `bootRun` · `/health`까지 통과했지만,
@@ -638,6 +649,7 @@ P1의 큐·재시도·DLQ에는 복구에 필요한 입력을 일시 보관한�
 - 토큰·시크릿은 환경변수. `.env`는 커밋하지 않는다
 - ngrok URL은 공개된 주소다. **서명 검증이 유일한 방어선**이라는 것을 잊지 않는다
 - 로컬 추론이므로 대화 내용이 외부 API로 나가지 않는다
+- **지표 관리 서버(6단계 M45)**: Micrometer 지표(`GET /actuator/prometheus`)는 업무 포트(8080)가 아니라 **별도 관리 포트(기본 9091)**에서만 나가고, `MANAGEMENT_METRICS_TOKEN`(64자리 16진수)이 있을 때만 켜진다. 토큰이 없으면 어떤 환경변수가 있어도 관리 리스너는 0개이고(`config/RoleWebTypePostProcessor`가 `management.server.port`를 `addFirst`로 덮는다 — `MANAGEMENT_SERVER_PORT`가 relaxed binding으로 토큰 없이 포트를 열 수 없다), CLI 역할(복구·색인·평가)은 토큰이 있어도 켜지지 않는다. 인증은 스캔 루트 밖 패키지 `com.slack.labmgmt`의 `MetricsAuthFilter`가 관리 컨텍스트에만 건다: **인증을 먼저** 보고(없거나 틀리면 경로와 상관없이 401), 그다음 `GET`·정확 경로 `/actuator/prometheus`만 통과시키며 나머지는 404·405다(경로는 정규화 전 원문으로 비교해 `..`·`%2e`·`;` 변형이 통과하지 못한다, 토큰 비교는 다이제스트 상수 시간, 리다이렉트 없음). `ManagementGuard`는 토큰 형식 위반, 관리 포트가 8080이거나 업무 포트(`server.port`)와 같은 조합(Boot가 두 컨텍스트를 합쳐 필터 없이 열 위험)을 기동에서 거부한다(키 이름·사유만 출력). 바인딩: 호스트 실행은 `127.0.0.1`(기본), 컨테이너는 compose가 `0.0.0.0`으로 두되 9091을 호스트에 게시하지 않고 `scrape` 네트워크로만 노출한다. LAN 노출 여부는 사람 단계(H1)에서 다른 장비로 확인한다. 토큰·Grafana 비밀번호는 `.env`에만 있고 pre-commit이 값이 있는 줄을 막으며, 도구가 만드는 비밀 파일은 저장소 밖 `~/.slack-lab-secrets`(권한 600)에 둔다(저장소는 iCloud 동기화 폴더 안일 수 있다).
 
 
 ## 11. 계측과 검증
@@ -660,6 +672,7 @@ P1의 큐·재시도·DLQ에는 복구에 필요한 입력을 일시 보관한�
 - **지표 집계와 검증 설정(5단계 M38·M42)**: `scripts/p1-metrics --since 5m`은 최근 구간의 6개 지표(최신 적체 스냅샷·큐 대기·LLM 시도·답변 시간·시도/이벤트 단위 결과 분포·`rag_result` 분포)를 로그에서 센다. LLM 시도 시리즈는 `llm_ms ≥ 0`인 모든 시도를 세므로(호출 없이 0ms로 기록된 시도도 포함) 빠른 실제 실패와 구분하지 못한다. 장애 유도는 운영 동작을 바꾸지 않는 환경 덮어쓰기로 한다: `LLM_BASE_URL`을 닫힌 포트로(+`LLM_VERIFYMODELONSTARTUP=false`) → LLM만 실패, `RAG_EMBEDDING_BASE_URL`을 닫힌 포트로 → RAG만 실패, `SLACK_BASEURL`을 요청을 받고 끊는 스텁으로 → 전송 결과 불명. `.env`를 `source`한 **뒤에** 같은 셸에서 `export`해야 덮어쓰기가 이긴다.
 - **구조화 로그(6단계 M44)**: 모든 역할이 stdout에 한 줄 JSON을 낸다(`adapter/logging/SlackLabJsonFormatter`, Boot 3.4 `logging.structured.format.console|file`에 같은 포매터). 필드는 `v`(1)·`ts`(UTC 밀리초 `Z`)·`level`·`role`·`logger`·`msg`(한국어 원문 그대로, 비ASCII 이스케이프 없음)·`event`(매핑될 때만)·`fields`(허용 키만, 숫자·불리언·열거값)·`exc`(클래스명 + 스택 한 문자열). 사건 키 매핑은 `EventKeys` 한 곳이고 판별 문자열은 `scripts/p1-metrics`와 같다 — 코어 로그 원문(`적체 스냅샷`·`처리 지표`·`LLM 실패 → 실패 안내로 전환`·`metric=rag_result`)을 바꾸지 않고 어댑터가 읽어 붙이므로 `core/` 변경은 0이고, `EventKeysContractTest`가 코어 소스 원문과 대조한다. 관측 실패 두 줄(`적체 스냅샷 실패`·키 없는 `적체 스냅샷`)은 `backlog_unobserved`로 표시하고 `fields`에는 `reason`만 둔다(부분 스냅샷의 빠진 키를 0으로 채우지 않는다). `fields`에는 `event_id`·`attempt_id`·질문·채널을 넣지 않는다 — 기존 코어 로그 `msg` 원문에 든 `event_id`는 기존 동작 그대로 보존한다. 같은 JSON이 회전 파일 `${SLACK_LAB_LOG_DIR:.runtime/logs}/<role>/slack-lab.log`(3일·200MB·50MB 단위)에도 남아 6단계 수집기가 읽는다. 집계 스크립트(`p1-metrics`·`n8n-watch`)는 `scripts/_logline.py`가 JSON 줄을 옛 텍스트 줄(`<ISO 시각> <msg>`)로 복원해 읽으므로 텍스트·JSON·혼합 입력의 출력이 같다. CLI 역할(복구·색인·평가)의 사람용 출력은 `System.out`이라 그대로이고, 로그 줄만 JSON이 되며 `.runtime/logs/{recovery,indexer,evaluator}`가 생긴다. 시험 JVM은 `MANAGEMENT_`·`LLM_`·`GRAFANA_`·`SLACK_LAB_` 접두 환경변수를 상속하지 않고 로그를 `build/test-logs`로 보낸다(`build.gradle`).
 - **기동 세션 도구(6단계 M44)**: 검증 기동은 `scripts/s6-session`이 만든 전용 compose 프로젝트(`slack-lab-s6v-<ID>`)와 세션 장부(쓴 `-f`·`--profile`, PID, 볼륨 선택)에서만 하고, 종료는 장부에 있는 것만 되돌린다(down 실패 시 프로젝트 레이블 정리, 최종 확인 실패 시 exit 1). 사용자의 기본 스택 볼륨과 장부 밖 프로세스는 건드리지 않는다. `scripts/core-diff-check`는 `core/` diff 0을 검사한다.
+- **Micrometer 지표와 관리 서버(6단계 M45)**: 세 역할(수신·워커·반응)과 `all`이 JVM·시스템·Tomcat·로그백 기본 지표를 `management.metrics.tags`의 `application=slack-lab`·`role=<역할>` 태그와 함께 `GET /actuator/prometheus`(관리 포트, Bearer 인증)로 낸다. M45는 계측 기반만 켜며 업무 지표(적체·큐 대기 등)는 M44의 로그 사건 키가 담당한다. 워커·반응은 업무 HTTP 포트가 없으므로 토큰이 있으면 서블릿 웹 타입을 켜되 `server.port=-1`로 업무 리스너는 열지 않는다(관리 컨텍스트만 뜬다). 검증은 `scripts/monitoring-verify mgmt --mode host|app`(전용 세션에서 무토큰/오토큰/회전 전 토큰 401, 비허용 경로·메서드, 리스너 바인딩, 회전)이다.
 - 성능 실험은 순차 20건(답변 p95 판정)과 서로 다른 이벤트 5건 동시 전송 × 2배치(적체 관측, 답변 시간은 판정 제외)다(2026-09-28 M9 실측으로 변경, PRD §5). 각 지표의 표본을 정렬해 `ceil(0.95 × N)`번째 값을 p95로 사용한다. 정상 답변 외 실패·누락을 제외해 합격시키지 않는다. 유실·실패·중복 답글이 한 건이라도 있으면 PRD 성능 기준 미달이다.
 - 동일 이벤트 동시 전달·완료 후 재전달은 별도 실험이며 중복 수신 수, 억제 수, 실제 답글 수를 비교한다. 안내 메시지는 정상 답변과 구분한다.
 - 서명 거부, LLM 제한 초과, 안내 전송 실패, 큐 저장 실패를 각각 유도하고 HTTP 응답·상태·로그를 확인한다. 전체 시간 제한은 연결 정체와 느린 응답에서도 검증한다.

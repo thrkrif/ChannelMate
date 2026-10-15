@@ -66,3 +66,29 @@ logging:
       max-history: 3
       total-size-cap: 200MB
       max-file-size: 50MB
+
+# 6단계 M45: Micrometer 지표. 관리 서버(별도 포트)는 MANAGEMENT_METRICS_TOKEN이 있을 때만 켜지고 그 포트·주소는 EPP(RoleWebTypePostProcessor)가
+# 정한다(그래서 management.server.port를 여기 두지 않는다 — 환경변수 MANAGEMENT_SERVER_PORT가 relaxed binding으로 토큰 없이 포트를 열지 못하게).
+# 노출은 prometheus 엔드포인트 하나뿐이고 접근 인증은 스캔 루트 밖 com.slack.labmgmt의 필터가 한다.
+slacklab:
+  management:
+    token: ${MANAGEMENT_METRICS_TOKEN:}
+    port: ${MANAGEMENT_SERVER_PORT:9091}
+management:
+  server:
+    address: ${MANAGEMENT_SERVER_ADDRESS:127.0.0.1}
+  endpoints:
+    access:
+      default: none
+    web:
+      exposure:
+        include: prometheus
+      discovery:
+        enabled: false
+  endpoint:
+    prometheus:
+      access: read-only
+  metrics:
+    tags:
+      application: slack-lab
+      role: ${app.role}
