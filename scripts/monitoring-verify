@@ -733,8 +733,10 @@ def cmd_run(argv):
         session = _mon_alarm.AlarmSession(sdir, sys.modules.get(__name__))
         env = session.real_env()
         code, results = _mon_run.run_rounds(env, rule, plan)
-    except (OSError, ValueError, RuntimeError):
-        code, results = model.EXIT_FAIL, [{"verdict": "induction", "reason": "알람 세션 실행 실패"}]
+    except (OSError, ValueError, RuntimeError, NotImplementedError) as e:
+        # 원인을 모르면 세션 한 번(수 시간)을 다시 써야 해서 예외 종류와 메시지를 남긴다(우리 코드의 메시지라 비밀값은 없다).
+        print(f"run 실패: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr)
+        code, results = model.EXIT_FAIL, [{"verdict": "induction", "reason": f"알람 세션 실행 실패({type(e).__name__}: {str(e)[:200]})"}]
     out = _opt(argv, "--out", os.path.join(sdir, "run-" + scen + ".json"))
     with open(out, "w", encoding="utf-8") as stream:
         json.dump({"scenario": scen, "exit": code, "results": results}, stream, ensure_ascii=False, indent=2)

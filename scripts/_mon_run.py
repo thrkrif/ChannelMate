@@ -51,14 +51,37 @@ def run_round(env, rule, variant, round_no, h, settle_s=60, poll_s=1.0):
     res = {"rule": rule, "variant": variant, "round": round_no, "h": h, "verdict": None, "reason": None, "firing_elapsed": None}
     t_established = env.induce(rule, variant, round_no)
     t0 = env.now() if t_established is None else t_established
-    if not getattr(env, "manages_hold", False):
+    states = []
+    fired_at = next((t-t0 for t, state in getattr(env, "history", []) if state == "firing"), None)
+    report_at = None
+    observation_error = None
+    if variant == "fire":
+        while True:
+            s = env.state(rule)
+            states.append((round(env.now() - t0, 1), s))
+            if s in ("nodata", "error"):
+                observation_error = s
+                break
+            if s == "firing" and fired_at is None:
+                fired_at = env.now() - t0
+            posts = env.reports(rule)
+            if posts >= 1 and report_at is None:
+                report_at = env.now()
+            elapsed = env.now() - t0
+            if elapsed >= spec["deadline"] or (elapsed >= h and posts >= 1):
+                break
+            next_check = min(h, spec["deadline"]) if elapsed < h else spec["deadline"]
+            env.sleep(min(poll_s, max(0.0, t0 + next_check - env.now())))
+        res["hold_elapsed"] = round(env.now() - t0, 1)
+    elif not getattr(env, "manages_hold", False):
         env.sleep(max(0.0, h - (env.now() - t0)))
     elif rule == "rule1" and not env.first:
         env.sleep(h)
     env.resolve(rule, variant, round_no)
     meas = env.measured(rule)
     res["measured"] = meas
-    if meas.get("h", 0) > model.H_CEILING:
+    # fire의 H는 하한이므로 리포트 예산까지 연장한 시간을 보정 상한으로 거절하지 않는다.
+    if (h if variant == "fire" else meas.get("h", 0)) > model.H_CEILING:
         res.update(verdict="bound", reason="실측 H가 150초 상한을 넘음")
         return res
     if meas:
@@ -72,10 +95,10 @@ def run_round(env, rule, variant, round_no, h, settle_s=60, poll_s=1.0):
 
     budget = spec["deadline"] + settle_s if variant == "fire" else settle_s
     end = max(t0 + budget, env.now() + settle_s)
-    states = []
-    fired_at = next((t-t0 for t, state in getattr(env, "history", []) if state == "firing"), None)
-    if any(state in ("nodata", "error") for _, state in getattr(env, "history", [])):
-        res.update(verdict="observe", reason="유도·유지 중 관측 오류")
+    if fired_at is None:
+        fired_at = next((t-t0 for t, state in getattr(env, "history", []) if state == "firing"), None)
+    if observation_error or any(state in ("nodata", "error") for _, state in getattr(env, "history", [])):
+        res.update(verdict="observe", reason="유도·유지 중 관측 오류", states=states)
         return res
     while env.now() <= end:
         s = env.state(rule)
@@ -86,14 +109,19 @@ def run_round(env, rule, variant, round_no, h, settle_s=60, poll_s=1.0):
             return res
         if s == "firing" and fired_at is None:
             fired_at = env.now() - t0
-        if variant == "fire" and fired_at is not None and env.reports(rule) >= 1 and not getattr(env, "manages_hold", False):
-            break
+        if variant == "fire":
+            posts = env.reports(rule)
+            if posts >= 1 and report_at is None:
+                report_at = env.now()
+            if fired_at is not None and posts >= 1 and not getattr(env, "manages_hold", False):
+                break
         env.sleep(poll_s)
     if getattr(env, "manages_hold", False):
         states = [(round(t-t0, 1), state) for t, state in env.history] + states
         states.sort(key=lambda item: item[0])
-        if fired_at is None:
-            fired_at = next((t for t, state in states if state == "firing"), None)
+        first_firing = next((t for t, state in states if state == "firing"), None)
+        if first_firing is not None:
+            fired_at = first_firing if fired_at is None else min(fired_at, first_firing)
         if any(state in ("nodata", "error") for _, state in states):
             res.update(verdict="observe", reason="회차 중 관측 오류", states=states)
             return res
@@ -118,7 +146,10 @@ def run_round(env, rule, variant, round_no, h, settle_s=60, poll_s=1.0):
     if variant == "fire":
         res["firing_elapsed"] = None if fired_at is None else round(fired_at, 1)
         # 유지 중 도착한 리포트도 예산에 맞게 판정하려고 첫 관측 시각을 쓴다.
-        elapsed = (getattr(env, "report_at", None) or env.now()) - t0
+        first_report = getattr(env, "report_at", None)
+        if first_report is None:
+            first_report = report_at if report_at is not None else env.now()
+        elapsed = first_report - t0
         res["report_elapsed"] = round(elapsed, 1)
         ok = fired_at is not None and posts == 1 and model.within_deadline(rule, elapsed)
         res.update(verdict="pass" if ok else "fail",
