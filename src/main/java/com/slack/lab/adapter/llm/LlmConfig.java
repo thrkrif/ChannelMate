@@ -31,7 +31,7 @@ public class LlmConfig {
      * (A6 유도용, PLAN §3 M4). Echo 클라이언트는 검증·웜업 대상이 아니다.
      */
     @Bean
-    public ApplicationRunner llmStartupCheck(LlmClient client, LlmProperties props) {
+    public ApplicationRunner llmStartupCheck(@org.springframework.beans.factory.annotation.Qualifier("llmClient") LlmClient client, LlmProperties props) {
         return (ApplicationArguments args) -> {
             if (!(client instanceof OpenAiCompatibleLlmClient openAiClient)) {
                 return;
