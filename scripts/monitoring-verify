@@ -17,6 +17,7 @@
       scripts/monitoring-verify session calibrate --rule R --samples "ds,de;ds,de;ds,de"   보정 표본으로 H 확정(모형 경계 밖이면 exit 5)
       scripts/monitoring-verify rag-prepare --session D --project P    세션 DB에 가상 문서 색인(DB 대상 확인 뒤 jar 실행기로)
       scripts/monitoring-verify teardown --project P                   해당 프로젝트의 세션을 s6-session teardown으로 종료
+      scripts/monitoring-verify bench --mode host|app --row echo --session D [--minutes 30] [--out F] [--launcher bootrun|jar|verifyBootRun] [--build-first]
       scripts/monitoring-verify stub webhook --port P                   웹훅을 받아 한 줄 JSON으로 출력하는 가짜 수신기
 
 기동 한 번(`s6-session`의 전용 compose 프로젝트)을 스스로 열고 닫는다. 비밀(관리 토큰)은 `.env`에서 메모리로만 읽고 어떤 출력·결과 파일에도
@@ -652,7 +653,7 @@ def cmd_stub(argv):
         stub = ms.WebhookStub(int(opts["--port"]))
         stub.start()
     elif argv[:1] == ["slack"] and "--port" in opts:
-        stub = _mon_stubs.SlackRecorder(int(opts["--port"])).start()
+        stub = _mon_stubs.SlackRecorder(int(opts["--port"]), host=opts.get("--host", "127.0.0.1")).start()
     elif argv[:1] == ["llm"] and "--port" in opts:
         stub = _mon_stubs.LlmStub(int(opts["--port"]), model=opts.get("--model", "stub-model")).start()
     else:
@@ -810,6 +811,9 @@ def cmd_teardown(argv):
 
 
 def main(argv):
+    if argv[:1] == ["bench"]:
+        import _mon_bench
+        return _mon_bench.main(argv[1:], sys.modules[__name__])
     commands = {"mgmt": cmd_mgmt, "spike": cmd_spike, "provision": cmd_provision, "replay": cmd_replay, "n8n-smoke": cmd_n8n_smoke, "stub": cmd_stub, "run": cmd_run,
                 "override": cmd_override, "session": cmd_session, "rag-prepare": cmd_rag_prepare, "teardown": cmd_teardown}
     if not argv or argv[0] not in commands:

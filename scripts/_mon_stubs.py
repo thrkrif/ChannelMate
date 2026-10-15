@@ -10,6 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 BOT_USER = "UBOTSTUB"
+FAILURE_NOTICE_PREFIX = "죄송해요, 지금 답변을 만들지 못했어요"
 
 
 def _send(handler, code, obj):
@@ -29,6 +30,7 @@ class SlackRecorder:
         self.modes = {}  # channel -> mode, "*" = 기본
         self.counts = {}  # (path, channel) -> 건수
         self.threads = {}  # (channel, thread_ts) -> 봇 답글 수
+        self.notices = {}
         self.seq = 0
         self.lock = threading.Lock()
         self.server = None
@@ -86,6 +88,8 @@ class SlackRecorder:
                         if body.get("thread_ts"):
                             key = (channel, body["thread_ts"])
                             outer.threads[key] = outer.threads.get(key, 0) + 1
+                            # 본문을 보관하지 않아도 실패 안내와 정상 답글을 대조할 수 있어야 한다.
+                            outer.notices[key] = outer.notices.get(key, 0) + int(body.get("text", "").startswith(FAILURE_NOTICE_PREFIX))
                     return _send(self, 200, {"ok": True, "ts": ts, "channel": channel})
                 if method == "auth.test":
                     return _send(self, 200, {"ok": True, "user_id": BOT_USER})
@@ -106,8 +110,10 @@ class SlackRecorder:
                     return
                 if method == "conversations.replies" and mode != "fail":
                     n = outer.threads.get((channel, q.get("ts")), 0)
+                    notices = outer.notices.get((channel, q.get("ts")), 0)
                     msgs = [{"ts": q.get("ts"), "text": "(스텁 부모)", "user": "UPARENT"}]
-                    msgs += [{"ts": f"{q.get('ts')}.{i}", "text": "(스텁 답글)", "user": BOT_USER, "bot_id": "BSTUB"} for i in range(n)]
+                    msgs += [{"ts": f"{q.get('ts')}.{i}", "text": FAILURE_NOTICE_PREFIX if i < notices else "(스텁 답글)",
+                              "user": BOT_USER, "bot_id": "BSTUB"} for i in range(n)]
                     return _send(self, 200, {"ok": True, "messages": msgs})
                 if mode == "fail":
                     return _send(self, 200, {"ok": False, "error": "not_in_channel"})

@@ -74,6 +74,16 @@ try:
     check("봇 답글 1개가 스레드 조회에 보인다", len(ns["replies"](ts)) == 1)
     summary = stub.summary()
     check("스텁 요약에 본문이 없다(경로·채널별 건수만)", all(isinstance(v, int) for d in summary.values() for v in d.values()), str(summary))
+    r = urllib.request.Request(f"http://127.0.0.1:{port}/chat.postMessage",
+                               data=json.dumps({"channel": "CDUMMY", "thread_ts": ts,
+                                                "text": _mon_stubs.FAILURE_NOTICE_PREFIX + " 원문 비보관"}).encode(), method="POST",
+                               headers={"Content-Type": "application/json"})
+    real_open(r, timeout=5).read()
+    from unittest.mock import patch
+    with patch.object(ns["time"], "sleep", lambda _s: None):
+        audit = ns["audit"]("안내 구분", [ts], settle=0)
+    check("기록용 스텁이 본문 없이 실패 안내를 구분한다", audit["failure_notice"] == 1 and audit["dup"] == 1)
+    check("안내 원문이 스텁 상태에 남지 않는다", "원문 비보관" not in repr(vars(stub)))
 finally:
     stub.stop()
 
@@ -81,5 +91,24 @@ ns2 = load(env={"SLACK_BASEURL": "http://127.0.0.1:1/api"})
 check("환경변수 SLACK_BASEURL도 따른다", ns2["API_BASE"] == "http://127.0.0.1:1/api", ns2["API_BASE"])
 ns3 = load()
 check("지정이 없으면 실제 Slack 주소(기존 동작)", ns3["API_BASE"] == "https://slack.com/api")
+import tempfile
+from unittest.mock import patch
+with tempfile.TemporaryDirectory() as d:
+    path = os.path.join(d, "summary.json")
+    ns3["ENV"]["P1_SUMMARY_OUT"] = path
+    ns3["ENV"]["P1_REPLY_TIMEOUT"] = "240"
+    waited = []
+    ns3.update(parent=lambda _label: "dummy-ts", send=lambda *args: (200, 1),
+               wait_replies=lambda tss, timeout: waited.append(timeout) or {"dummy-ts": 1})
+    with patch.object(ns3["time"], "sleep", lambda _s: None):
+        ns3["run_seq"](1)
+    check("순차 답글 대기는 설정한 240초를 따른다", waited == [240])
+    ns3["run_seq"] = lambda n: (["dummy-ts"], [200])
+    ns3["audit"] = lambda *args, **kw: {"threads": 1, "ok": 1, "missing": 0, "dup": 0, "failure_notice": 0, "language_violation": 0}
+    with patch.object(sys, "argv", ["p1-load", "seq", "1"]):
+        ns3["main"]()
+    saved = json.load(open(path, encoding="utf-8"))
+    check("완료 요약은 원본 식별자 없이 HTTP 실패·건수만 저장한다", saved == {"summary": ns3["audit"](), "http_errors": 0}
+          and "dummy-ts" not in json.dumps(saved) and not os.path.exists(path + ".tmp"))
 print(f"\n{sum(results)}/{len(results)} 통과")
 sys.exit(0 if all(results) else 1)

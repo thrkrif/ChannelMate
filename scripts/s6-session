@@ -221,7 +221,7 @@ def stop_pids(ledger):
     pids = [e["pid"] for e in ledger["pids"] if alive(e["pid"])]
     for pid in pids:
         try:
-            os.killpg(pid, signal.SIGTERM)
+            signal_owned(ledger, pid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError):
             pass
     deadline = time.time() + TERM_WAIT
@@ -230,12 +230,18 @@ def stop_pids(ledger):
     for pid in pids:
         if alive(pid):
             try:
-                os.killpg(pid, signal.SIGKILL)
+                signal_owned(ledger, pid, signal.SIGKILL)
             except (ProcessLookupError, PermissionError):
                 pass
     time.sleep(0.2)
     gradlew = os.environ.get("S6_GRADLEW", "./gradlew")
     run([gradlew, "--stop"])
+
+
+def signal_owned(ledger, pid, sig):
+    # Gradle 데몬이 만든 앱 JVM은 spawn의 프로세스 그룹을 물려받지 않을 수 있다.
+    direct = any(e["pid"] == pid and e.get("signal_pid") for e in ledger["pids"])
+    (os.kill if direct else os.killpg)(pid, sig)
 
 
 def label_cleanup(project):
