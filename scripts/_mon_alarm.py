@@ -133,6 +133,7 @@ class AlarmSession:
         settings = {"APP_ROLE": "all", "LLM_CLIENT": "echo", "RAG_ENABLED": "false", "CLASSIFICATION_ENABLED": "false",
                     "SLACK_BASEURL": self.slack.base, "SLACK_LAB_VERIFY_PAUSE_FLAG": os.path.join(self.sdir, "pause.flag"),
                     "SLACK_LAB_LOG_DIR": self.sdir, "EXPERIMENT_SLOWMODEMS": "0", "RETRY_MAXRETRIES": "3",
+                    "EXPERIMENT_HALTAFTERSEND": "false",
                     "RABBITMQ_HOST": "localhost", "POSTGRES_URL": "jdbc:postgresql://localhost:5432/slacklab"}
         if mode != "echo":
             settings.update(LLM_CLIENT="ollama", LLM_VERIFYMODELONSTARTUP="false",

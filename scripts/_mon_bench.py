@@ -1,4 +1,4 @@
-"""M49a B1·B2: 콜드 기동부터 echo 하드웨어 측정까지. 종료 정리는 호출자의 teardown이 맡는다."""
+"""M49a B1·B2·B3 콜드 기동 측정. B3는 같은 환경에서 알람 시나리오로 이어진다."""
 import argparse
 import glob
 import gzip
@@ -14,6 +14,8 @@ import time
 import urllib.request
 
 import _mon_env
+import _mon_alarm
+import _mon_model as model
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SERVICES = ("receiver", "worker", "reactor")
@@ -75,7 +77,9 @@ class Bench:
         self.app_pid = None
         self.jvm_pids = []
         self.started = False
-        self.result = {"mode": opts.mode, "row": "echo", "ok": False, "loads": []}
+        self.row = getattr(opts, "row", "echo")
+        self.alarm = None
+        self.result = {"mode": opts.mode, "row": self.row, "ok": False, "loads": []}
 
     def call(self, args, check=True, env=None):
         p = subprocess.run(args, cwd=ROOT, env=env or self.env, capture_output=True, text=True)
@@ -135,6 +139,9 @@ class Bench:
         if self.call(["docker", "volume", "ls", "-q", "--filter", "name=^" + self.project + "_"]).stdout.strip():
             raise BenchError("사전 조건: 같은 프로젝트 볼륨이 남아 있다")
         self.env["SLACK_LAB_COMPOSE_PROJECT"] = self.project
+        if self.row == "echo-mon":
+            self.env["SLACK_TEST_CHANNEL"] = _mon_alarm.TEST_CHANNEL
+            self.alarm = _mon_alarm.AlarmSession(self.sdir, self.mv)
 
     def compose(self, *args):
         return self.s6("compose", "--", "-f", os.path.join(ROOT, "compose.yaml"),
@@ -257,7 +264,8 @@ class Bench:
     def load(self, label, args, expected, failure=False):
         path = os.path.join(self.sdir, "load-" + label + ".json")
         self.spawn("load-" + label, [os.path.join(ROOT, "scripts", "p1-load"), *args],
-                   {"SLACK_BASEURL": self.stub_host, "P1_URL": "http://127.0.0.1:8080", "P1_REPLY_TIMEOUT": "240", "P1_SUMMARY_OUT": path})
+                   {"SLACK_BASEURL": self.stub_host, "SLACK_TEST_CHANNEL": self.env["SLACK_TEST_CHANNEL"],
+                    "P1_URL": "http://127.0.0.1:8080", "P1_REPLY_TIMEOUT": "240", "P1_SUMMARY_OUT": path})
         self.wait(lambda: os.path.isfile(path), 1800, "부하 완료 요약 없음")
         raw = read_json(path)
         s = raw["summary"]
@@ -276,6 +284,16 @@ class Bench:
             data = json.load(r)
         return int(data.get("chat.postMessage", {}).get(self.env["SLACK_TEST_CHANNEL"], 0))
 
+    def check_alarm_posts(self):
+        posts = self.alarm.slack.request("/__counts").get("chat.postMessage", {})
+        alarm_posts = int(posts.get(self.alarm.env["ALERT_CHANNEL"], 0))
+        self.result["alarm_posts"] = alarm_posts
+        self.result["stub_posts_total"] = sum(int(n) for n in posts.values())
+        if alarm_posts:
+            raise BenchError("측정 중 알람 채널 게시 발생: 알람 시나리오 전 게시 0건 조건 미달")
+        if self.result["stub_posts_total"] != self.result["stub_posts"]:
+            raise BenchError("측정 중 테스트 채널 외 스텁 게시 발생")
+
     def run(self):
         self.preflight()
         port = 18962
@@ -287,31 +305,44 @@ class Bench:
         elif self.o.build_first:
             raise BenchError("--build-first는 app 모드에서만 쓴다")
         self.result["cold_started"] = time.time()
-        self.result["round"] = "B1" if self.o.mode == "host" else "B2"
-        round_entry(self.sdir, {"event": "start", "round": self.result["round"], "purpose": "echo-" + self.o.mode,
+        self.result["round"] = "B3" if self.alarm else ("B1" if self.o.mode == "host" else "B2")
+        label = self.row + "-" + self.o.mode
+        round_entry(self.sdir, {"event": "start", "round": self.result["round"], "purpose": label,
                                 "started": self.result["cold_started"]})
         try:
-            self.hw("start", "--label", "echo-" + self.o.mode, "--ledger", os.path.join(self.sdir, "boot-ledger.jsonl"))
+            self.hw("start", "--label", label, "--ledger", os.path.join(self.sdir, "boot-ledger.jsonl"))
         finally:
             pid_file = os.path.join(self.hwdir, "hw-sampler.pid")
             if os.path.isfile(pid_file):
                 self.started = True
                 with open(pid_file, encoding="utf-8") as f:
                     self.register(int(f.read()), "hw-sampler")
-        self.spawn("bench-slack", [os.path.join(ROOT, "scripts", "monitoring-verify"), "stub", "slack", "--port", str(port),
-                                   "--host", "0.0.0.0" if self.o.mode == "app" else "127.0.0.1"])
-        self.wait(lambda: self.stub_ready(), 15, "Slack 스텁 준비 실패")
-        self.s6("compose", "--", "-f", os.path.join(ROOT, "compose.yaml"), "up", "-d", "--wait", "rabbitmq", "postgres")
-        self.start_app()
+        if self.alarm:
+            code = self.alarm.up()
+            self.result["alarm_up_exit"] = code
+            if code != model.EXIT_OK:
+                self.result["exit"] = code
+                raise BenchError("알람 규칙·지속 시간 불일치" if code == model.EXIT_RULES else "알람 환경 준비 실패")
+            if not self.alarm.data.get("ready"):
+                raise BenchError("알람 환경 ready 확인 실패")
+        else:
+            self.spawn("bench-slack", [os.path.join(ROOT, "scripts", "monitoring-verify"), "stub", "slack", "--port", str(port),
+                                       "--host", "0.0.0.0" if self.o.mode == "app" else "127.0.0.1"])
+            self.wait(lambda: self.stub_ready(), 15, "Slack 스텁 준비 실패")
+            self.s6("compose", "--", "-f", os.path.join(ROOT, "compose.yaml"), "up", "-d", "--wait", "rabbitmq", "postgres")
+            self.start_app()
         self.load("warmup", ["warmup"], 2)
         self.hw("mark", "warmup")
         self.load("seq", ["seq", "20"], 20)
         self.load("burst", ["burst", "5", "2"], 10)
         self.load("normal", ["seq", "5"], 5)
         self.result["failure_restart_started"] = time.time()
-        if self.o.mode == "host":
-            self.stop_host_app()
-        self.start_app(True)
+        if self.alarm:
+            self.alarm.restart_app("F-echo")
+        else:
+            if self.o.mode == "host":
+                self.stop_host_app()
+            self.start_app(True)
         self.result["failure_ready"] = time.time()
         before_rows = self.logs()
         posts = self.stub_posts()
@@ -325,6 +356,8 @@ class Bench:
         if {k: got[k] for k in EXPECTED_FAILURE} != EXPECTED_FAILURE or got["stub_posts"] != 10:
             raise BenchError("유도 문제: F-echo 기대 사건 수 불일치")
         self.result["failure_finished"] = time.time()
+        if self.alarm:
+            self.alarm.restart_app("echo")
         deadline = self.result["cold_started"] + self.o.minutes * 60
         while time.time() < deadline:
             if not self.health():
@@ -334,7 +367,9 @@ class Bench:
         totals = counts(self.logs())
         self.result["log_counts"] = totals
         self.result["stub_posts"] = self.stub_posts()
-        if sum("워커 소비자 시작" in r.get("msg", "") for r in self.logs()) != 2:
+        if self.alarm:
+            self.check_alarm_posts()
+        if sum("워커 소비자 시작" in r.get("msg", "") for r in self.logs()) != (3 if self.alarm else 2):
             raise BenchError("계획한 앱 교체 외 워커 재시작 감지")
         if totals != {"attempts": 57, "retries": 15, "llm_final_failure": 5, "received": 42, "replies": 37, "notices": 5} or self.stub_posts() != 84:
             raise BenchError("수신·답변 로그와 스텁 건수 대조 불일치")
@@ -359,13 +394,17 @@ class Bench:
         self.wait(stopped, 30, "표본 수집기 종료 확인 실패")
         report = self.hw("report", "--json", check=False)
         self.result["hardware"] = json.loads(report.stdout)
+        self.result["measurement_processes"] = [
+            {k: row[k] for k in ("pid", "name", "signal_pid") if k in row}
+            for row in read_json(os.path.join(self.sdir, "ledger.json"))["pids"]]
         self.result["measured_until"] = time.time()
 
 
 def main(argv, mv):
     parser = argparse.ArgumentParser(prog="monitoring-verify bench")
     parser.add_argument("--mode", choices=("host", "app"), required=True)
-    parser.add_argument("--row", choices=("echo",), required=True)
+    parser.add_argument("--row", choices=("echo", "echo-mon"), required=True,
+                        help="echo: B1/B2, echo-mon: B3(host verifyBootRun, 측정 후 알람 환경 유지)")
     parser.add_argument("--session", required=True)
     parser.add_argument("--minutes", type=float, default=30)
     parser.add_argument("--out")
@@ -375,6 +414,10 @@ def main(argv, mv):
         opts = parser.parse_args(argv)
         if not math.isfinite(opts.minutes) or opts.minutes <= 0 or (opts.mode == "app" and opts.launcher != "bootrun"):
             parser.error("minutes는 양수, launcher는 host 전용이다")
+        if opts.row == "echo-mon":
+            if opts.mode != "host" or opts.build_first or opts.launcher == "jar":
+                parser.error("echo-mon은 host verifyBootRun 전용이며 --build-first를 쓰지 않는다")
+            opts.launcher = "verifyBootRun"
     except SystemExit as e:
         return e.code
     bench = Bench(opts, mv)
@@ -397,4 +440,4 @@ def main(argv, mv):
             round_entry(bench.sdir, {"event": "measurement_finished", "round": bench.result["round"], "finished": time.time(),
                                      "ok": bench.result["ok"], "teardown_pending": True})
     print("bench: " + ("합격" if bench.result["ok"] else bench.result.get("reason", "하드웨어 미달")))
-    return 0 if bench.result["ok"] else 1
+    return 0 if bench.result["ok"] else bench.result.get("exit", 1)

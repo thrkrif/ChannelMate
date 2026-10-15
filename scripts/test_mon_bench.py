@@ -11,7 +11,7 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import _mon_bench as bench
 
@@ -159,14 +159,146 @@ class BenchTests(unittest.TestCase):
         self.stack.enter_context(patch.object(bench.Bench, 'health', lambda s: True))
         self.stack.enter_context(patch.object(bench.Bench, 'stub_posts', lambda s: bench.read_json(str(self.sdir/'posts.json')) if (self.sdir/'posts.json').exists() else 0))
 
-    def run_bench(self, mode='host', extra=()):
+    def run_bench(self, mode='host', extra=(), row='echo'):
         os.environ['FAKE_MODE'] = mode
         self.stdout = io.StringIO()
         with contextlib.redirect_stdout(self.stdout), contextlib.redirect_stderr(self.stdout):
-            code = bench.main(['--mode',mode,'--row','echo','--session',str(self.sdir), *extra], mv)
+            code = bench.main(['--mode',mode,'--row',row,'--session',str(self.sdir), *extra], mv)
         self.result = bench.read_json(str(self.sdir / ('bench-'+mode+'.json')))
         self.trace = [json.loads(x) for x in (self.sdir/'trace.jsonl').read_text().splitlines()] if (self.sdir/'trace.jsonl').exists() else []
         return code
+
+    def fake_alarm(self, code=0, ready=True, alarm_posts=0, extra_posts=0):
+        session = Mock()
+        session.env = {'ALERT_CHANNEL': 'ALARM'}
+        session.data = {}
+        def trace(action):
+            with (self.sdir/'trace.jsonl').open('a') as stream:
+                stream.write(json.dumps(['alarm', action])+'\n')
+        def register(name):
+            path = str(self.sdir/'ledger.json')
+            ledger = bench.read_json(path)
+            ledger['pids'].append({'pid': 46000+len(ledger['pids']), 'name': name})
+            bench.write_json(path, ledger)
+        def restart(mode):
+            trace(mode)
+            register('alarm-app')
+            register('alarm-app-jvm')
+            path = self.sdir/'all'/'slack-lab.log'
+            path.parent.mkdir(exist_ok=True)
+            with path.open('a') as stream:
+                stream.write(json.dumps({'msg':'워커 소비자 시작'})+'\n')
+            session.data['mode'] = mode
+            bench.write_json(str(self.sdir/'alarm-state.json'), session.data)
+        def up():
+            trace('up')
+            register('alarm-slack')
+            register('alarm-llm')
+            restart('echo')
+            session.data['ready'] = ready and code == 0
+            bench.write_json(str(self.sdir/'alarm-state.json'), session.data)
+            return code
+        def posts(*args):
+            return {'chat.postMessage': {'CSTUBVERIFY': bench.read_json(str(self.sdir/'posts.json')),
+                                         'ALARM': alarm_posts, 'OTHER': extra_posts}}
+        session.up.side_effect = up
+        session.restart_app.side_effect = restart
+        session.slack.request.side_effect = posts
+        self.stack.enter_context(patch.object(bench._mon_alarm, 'AlarmSession', return_value=session))
+        return session
+
+    def test_b3_same_boot_order_counts_and_preserved_environment(self):
+        session = self.fake_alarm()
+        self.assertEqual(self.run_bench(row='echo-mon'), 0, self.stdout.getvalue())
+        actions = [(r[0], r[1]) for r in self.trace]
+        expected = [('hw-measure','start'), ('alarm','up'), ('alarm','echo'),
+                    ('p1-load','warmup'), ('hw-measure','mark'), ('p1-load','seq'),
+                    ('p1-load','burst'), ('p1-load','seq'), ('alarm','F-echo'),
+                    ('p1-load','seq'), ('alarm','echo'), ('hw-measure','stop'), ('hw-measure','report')]
+        filtered = [a for a in actions if a in expected]
+        self.assertEqual(filtered, expected)
+        session.up.assert_called_once_with()
+        loads = [r for r in self.trace if r[:2]==['s6-session','spawn'] and any(x.startswith('load-') for x in r)]
+        self.assertEqual(len(loads), 5)
+        self.assertTrue(all('SLACK_TEST_CHANNEL=CSTUBVERIFY' in r for r in loads))
+        self.assertEqual([c.args[0] for c in session.restart_app.call_args_list], ['F-echo','echo'])
+        self.assertFalse(any('teardown' in r or 'compose' in r or 'bench-slack' in r for r in self.trace))
+        self.assertEqual(self.result['round'], 'B3')
+        self.assertEqual(self.result['row'], 'echo-mon')
+        self.assertEqual(self.result['log_counts']['received'], 42)
+        self.assertEqual(self.result['stub_posts_total'], 84)
+        self.assertEqual(self.result['alarm_posts'], 0)
+        self.assertEqual(self.result['hardware']['swap_growth_mib'], 1)
+        state = bench.read_json(str(self.sdir/'alarm-state.json'))
+        self.assertEqual(state, {'ready':True, 'mode':'echo'})
+        names = [r['name'] for r in self.result['measurement_processes']]
+        self.assertEqual(names.count('alarm-app-jvm'), 3)
+        for name in ('hw-sampler','alarm-slack','alarm-llm','load-failure'):
+            self.assertIn(name, names)
+        self.assertTrue(self.result['teardown_pending'])
+        entries = [json.loads(line) for line in (self.sdir/'bench-ledger.jsonl').read_text().splitlines()]
+        self.assertEqual([e['round'] for e in entries], ['B3','B3'])
+
+    def test_b3_rules_mismatch_stops_measurement_and_preserves_exit(self):
+        self.fake_alarm(code=3)
+        self.assertEqual(self.run_bench(row='echo-mon'), 3)
+        self.assertEqual(self.result['alarm_up_exit'], 3)
+        self.assertFalse(self.result['ok'])
+        self.assertFalse(any(r[0]=='p1-load' for r in self.trace))
+        self.assertEqual(sum(r[:2]==['hw-measure','stop'] for r in self.trace), 1)
+        self.assertTrue(self.result['teardown_pending'])
+
+    def test_b3_not_ready_is_not_a_successful_boot(self):
+        self.fake_alarm(ready=False)
+        self.assertEqual(self.run_bench(row='echo-mon'), 1)
+        self.assertIn('ready', self.result['reason'])
+        self.assertFalse(any(r[0]=='p1-load' for r in self.trace))
+
+    def test_b3_up_exception_stops_only_sampler(self):
+        session = self.fake_alarm()
+        session.up.side_effect = RuntimeError('secret-value')
+        self.assertEqual(self.run_bench(row='echo-mon'), 1)
+        self.assertFalse(any(r[0]=='p1-load' or 'teardown' in r for r in self.trace))
+        self.assertEqual(sum(r[:2]==['hw-measure','stop'] for r in self.trace), 1)
+        self.assertNotIn('secret-value', json.dumps(self.result))
+
+    def test_b3_dispatch_preserves_bench_arguments_and_exit(self):
+        args = ['--mode','host','--row','echo-mon','--session',str(self.sdir)]
+        with patch.dict(sys.modules, {mv.__name__: mv}), patch.object(bench, 'main', return_value=3) as dispatch:
+            self.assertEqual(mv.main(['bench', *args]), 3)
+        self.assertEqual(dispatch.call_args.args[0], args)
+
+    def test_b3_alarm_posts_fail_with_reason_and_count(self):
+        self.fake_alarm(alarm_posts=1)
+        self.assertEqual(self.run_bench(row='echo-mon'), 1)
+        self.assertEqual(self.result['alarm_posts'], 1)
+        self.assertEqual(self.result['stub_posts_total'], 85)
+        self.assertIn('알람 채널 게시', self.result['reason'])
+
+    def test_b3_other_posts_fail_total_reconciliation(self):
+        self.fake_alarm(extra_posts=1)
+        self.assertEqual(self.run_bench(row='echo-mon'), 1)
+        self.assertIn('테스트 채널 외', self.result['reason'])
+
+    def test_b3_failure_evidence_still_required(self):
+        self.fake_alarm()
+        with patch.dict(os.environ, {'FAKE_BAD_COUNTS':'1'}):
+            self.assertEqual(self.run_bench(row='echo-mon'), 1)
+        self.assertEqual(self.result['failure_evidence']['retries'], 14)
+        self.assertIn('유도 문제', self.result['reason'])
+
+    def test_b3_hardware_failure_keeps_environment(self):
+        self.fake_alarm()
+        with patch.dict(os.environ, {'FAKE_HW_FAIL':'1'}):
+            self.assertEqual(self.run_bench(row='echo-mon'), 1)
+        self.assertTrue(bench.read_json(str(self.sdir/'alarm-state.json'))['ready'])
+        self.assertEqual(self.result['hardware']['swap_growth_mib'], 1)
+
+    def test_b3_invalid_mode_and_launcher_before_boot(self):
+        for args in (['--mode','app'], ['--launcher','jar'], ['--build-first']):
+            with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(bench.main(['--mode','host','--row','echo-mon','--session',str(self.sdir), *args],mv),2)
+        self.assertFalse((self.sdir/'trace.jsonl').exists())
 
     def test_host_order_and_wait(self):
         self.assertEqual(self.run_bench(), 0, self.stdout.getvalue())
