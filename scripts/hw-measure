@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""하드웨어 측정기(6단계 M48, C10 도구). 5초마다 컨테이너·프로세스·메모리·스왑·Ollama 상태를 표본으로 남기고, 끝나면 판정한다.
+
+사용: scripts/hw-measure start --out <디렉터리> [--interval 5] [--label <구성 이름>] [--ledger <장부 파일>]
+      scripts/hw-measure mark warmup --out <디렉터리>        워밍업이 끝난 시각 표시(이후 스왑 증가 기준)
+      scripts/hw-measure stop --out <디렉터리>               표본 수집 중지
+      scripts/hw-measure report --out <디렉터리> [--json]    판정: 스왑 증가 ≤512MiB(워밍업 뒤), Docker VM 최고 ≤할당량의 80%, 재시작·OOM 0
+      scripts/hw-measure sample                             표본 한 번을 JSON으로 출력(점검용)
+
+표본 원천: `docker stats --no-stream --format json`, `ps -axo rss=,comm=`, `vm_stat`, `sysctl vm.swapusage`, `ollama ps`,
+Docker VM 할당량은 `docker info --format '{{.MemTotal}}'`, 재시작·OOM은 `docker inspect`. 모든 출력은 저장소 밖 <디렉터리>에만 쓴다.
+비밀값·event_id·채널 ID·질문은 읽지도 쓰지도 않는다(수집 대상이 시스템 지표뿐이다).
+종료 코드: 0 합격, 1 미달, 2 사용법 오류.
+"""
+import json
+import os
+import re
+import signal
+import subprocess
+import sys
+import time
+
+SWAP_LIMIT_MIB = 512
+VM_LIMIT_RATIO = 0.80
+UNITS = {"b": 1, "kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3, "kb": 1000, "mb": 1000 ** 2, "gb": 1000 ** 3}
+
+
+def run(cmd, timeout=20):
+    """외부 명령 한 번. 실패하면 빈 문자열(표본 한 칸을 비울 뿐 수집을 멈추지 않는다). 시험은 이 함수를 교체한다."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=timeout).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def to_bytes(text):
+    m = re.match(r"\s*([0-9.]+)\s*([A-Za-z]+)", text or "")
+    if not m or m.group(2).lower() not in UNITS:
+        return 0
+    return int(float(m.group(1)) * UNITS[m.group(2).lower()])
+
+
+def parse_docker_stats(out):
+    """`docker stats --format json` 줄들 → {컨테이너 이름: 메모리 사용 바이트}."""
+    res = {}
+    for line in out.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        res[row.get("Name") or row.get("Container") or "?"] = to_bytes(str(row.get("MemUsage", "")).split("/")[0])
+    return res
+
+
+def parse_ps(out):
+    """`ps -axo rss=,comm=` → {'java': rss KiB 합, 'ollama': rss KiB 합}. 이름은 경로의 마지막 부분으로 비교한다."""
+    sums = {"java": 0, "ollama": 0}
+    for line in out.splitlines():
+        m = re.match(r"\s*(\d+)\s+(.+)$", line)
+        if not m:
+            continue
+        name = os.path.basename(m.group(2).strip())
+        for key in sums:
+            if name == key or name.startswith(key + " "):
+                sums[key] += int(m.group(1))
+    return sums
+
+
+def parse_vm_stat(out):
+    """vm_stat → 바이트 단위 {free, active, inactive, wired, compressed}. 쪽 크기는 머리줄에서 읽는다."""
+    m = re.search(r"page size of (\d+) bytes", out)
+    page = int(m.group(1)) if m else 16384
+    wanted = {"Pages free": "free", "Pages active": "active", "Pages inactive": "inactive", "Pages wired down": "wired",
+              "Pages occupied by compressor": "compressed"}
+    res = {}
+    for line in out.splitlines():
+        k, _, v = line.partition(":")
+        if k.strip() in wanted and v.strip().rstrip(".").isdigit():
+            res[wanted[k.strip()]] = int(v.strip().rstrip(".")) * page
+    return res
+
+
+def parse_swap(out):
+    """`vm.swapusage: total = 2048.00M  used = 1164.25M …` → used MiB(없으면 None)."""
+    m = re.search(r"used\s*=\s*([0-9.]+)([MGK])", out)
+    if not m:
+        return None
+    v = float(m.group(1))
+    return v * {"K": 1 / 1024, "M": 1, "G": 1024}[m.group(2)]
+
+
+def parse_ollama_ps(out):
+    """`ollama ps` → 적재된 모델 이름 목록(머리줄 제외)."""
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    return [ln.split()[0] for ln in lines[1:]] if len(lines) > 1 else []
+
+
+def parse_inspect(out):
+    """`docker inspect -f '{{.Name}} {{.RestartCount}} {{.State.OOMKilled}}' …` → (재시작 합, OOM 수)."""
+    restarts = ooms = 0
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[-2].isdigit():
+            restarts += int(parts[-2])
+            ooms += 1 if parts[-1].lower() == "true" else 0
+    return restarts, ooms
+
+
+def take_sample(now=None):
+    containers = parse_docker_stats(run(["docker", "stats", "--no-stream", "--format", "json"]))
+    names = run(["docker", "ps", "-q"]).split()
+    restarts, ooms = parse_inspect(run(["docker", "inspect", "-f", "{{.Name}} {{.RestartCount}} {{.State.OOMKilled}}", *names])) if names else (0, 0)
+    mem_total = run(["docker", "info", "--format", "{{.MemTotal}}"]).strip()
+    return {
+        "t": time.time() if now is None else now,
+        "containers": containers,
+        "docker_vm_total": int(mem_total) if mem_total.isdigit() else 0,
+        "ps_rss_kib": parse_ps(run(["ps", "-axo", "rss=,comm="])),
+        "vm_stat": parse_vm_stat(run(["vm_stat"])),
+        "swap_used_mib": parse_swap(run(["sysctl", "vm.swapusage"])),
+        "ollama_models": parse_ollama_ps(run(["ollama", "ps"])),
+        "restart_count": restarts,
+        "oom_killed": ooms,
+    }
+
+
+def judge(samples, warmup_t=None):
+    """표본 목록 → 판정 딕트. 순수 함수(시험 대상)."""
+    if not samples:
+        return {"ok": False, "reason": "표본 없음"}
+    total = max((s.get("docker_vm_total") or 0) for s in samples)
+    peak = max(sum((s.get("containers") or {}).values()) for s in samples)
+    after = [s for s in samples if warmup_t is None or s["t"] >= warmup_t]
+    base = next((s["swap_used_mib"] for s in after if s.get("swap_used_mib") is not None), None)
+    swaps = [s["swap_used_mib"] for s in after if s.get("swap_used_mib") is not None]
+    swap_growth = (max(swaps) - base) if swaps and base is not None else None
+    restarts = max(s.get("restart_count", 0) for s in samples) - min(s.get("restart_count", 0) for s in samples)
+    ooms = max(s.get("oom_killed", 0) for s in samples)
+    ratio = (peak / total) if total else None
+    checks = {
+        "swap_growth_mib": swap_growth,
+        "swap_ok": swap_growth is not None and swap_growth <= SWAP_LIMIT_MIB,
+        "docker_vm_peak_bytes": peak,
+        "docker_vm_total_bytes": total,
+        "docker_vm_peak_ratio": None if ratio is None else round(ratio, 4),
+        "vm_ok": ratio is not None and ratio <= VM_LIMIT_RATIO,
+        "restart_increase": restarts,
+        "oom_killed": ooms,
+        "stable_ok": restarts == 0 and ooms == 0,
+        "samples": len(samples),
+        "warmup_marked": warmup_t is not None,
+    }
+    checks["ok"] = checks["swap_ok"] and checks["vm_ok"] and checks["stable_ok"] and checks["warmup_marked"]
+    return checks
+
+
+def paths(out):
+    return {k: os.path.join(out, v) for k, v in {"samples": "hw-samples.jsonl", "pid": "hw-sampler.pid", "warmup": "hw-warmup.txt",
+                                                 "meta": "hw-meta.json"}.items()}
+
+
+def sampler_loop(out, interval):
+    p = paths(out)
+    stop = {"flag": False}
+    signal.signal(signal.SIGTERM, lambda *a: stop.__setitem__("flag", True))
+    with open(p["samples"], "a", encoding="utf-8") as f:
+        while not stop["flag"]:
+            f.write(json.dumps(take_sample(), ensure_ascii=False) + "\n")
+            f.flush()
+            end = time.time() + interval
+            while time.time() < end and not stop["flag"]:
+                time.sleep(0.2)
+
+
+def read_samples(out):
+    p = paths(out)["samples"]
+    if not os.path.exists(p):
+        return []
+    rows = []
+    for line in open(p, encoding="utf-8"):
+        try:
+            rows.append(json.loads(line))
+        except ValueError:
+            pass
+    return rows
+
+
+def opt(argv, name, default=None):
+    return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else default
+
+
+def main(argv):
+    if not argv:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    cmd, rest = argv[0], argv[1:]
+    if cmd == "sample":
+        print(json.dumps(take_sample(), ensure_ascii=False))
+        return 0
+    if cmd == "sample-loop":  # 내부용: start가 띄운다
+        sampler_loop(opt(rest, "--out"), float(opt(rest, "--interval", "5")))
+        return 0
+    out = opt(rest, "--out")
+    if cmd not in ("start", "stop", "mark", "report") or not out:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    os.makedirs(out, exist_ok=True)
+    p = paths(out)
+    if cmd == "start":
+        if os.path.exists(p["pid"]):
+            print("이미 수집 중이다(stop 먼저)", file=sys.stderr)
+            return 2
+        proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "sample-loop", "--out", out,
+                                 "--interval", opt(rest, "--interval", "5")], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                start_new_session=True)
+        with open(p["pid"], "w", encoding="utf-8") as f:
+            f.write(str(proc.pid))
+        meta = {"label": opt(rest, "--label", ""), "started": time.time(), "interval": float(opt(rest, "--interval", "5"))}
+        with open(p["meta"], "w", encoding="utf-8") as f:
+            json.dump(meta, f)
+        ledger = opt(rest, "--ledger")
+        if ledger:
+            with open(ledger, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"event": "hw-measure start", **meta}, ensure_ascii=False) + "\n")
+        print(f"수집 시작 pid={proc.pid} 간격={meta['interval']}초 → {out}")
+        return 0
+    if cmd == "mark":
+        if rest[:1] != ["warmup"]:
+            print(__doc__.split("\n\n")[1], file=sys.stderr)
+            return 2
+        with open(p["warmup"], "w", encoding="utf-8") as f:
+            f.write(str(time.time()))
+        print("워밍업 종료 시각 기록")
+        return 0
+    if cmd == "stop":
+        if not os.path.exists(p["pid"]):
+            print("수집 중이 아니다")
+            return 0
+        pid = int(open(p["pid"], encoding="utf-8").read().strip())
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        os.remove(p["pid"])
+        print("수집 중지")
+        return 0
+    warmup = float(open(p["warmup"], encoding="utf-8").read()) if os.path.exists(p["warmup"]) else None
+    verdict = judge(read_samples(out), warmup)
+    if "--json" in rest:
+        print(json.dumps(verdict, ensure_ascii=False, indent=2))
+    else:
+        for k, v in verdict.items():
+            print(f"{k}: {v}")
+        print("판정:", "합격" if verdict["ok"] else "미달")
+    return 0 if verdict["ok"] else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -58,3 +58,13 @@ docker volume rm slack-lab-n8n-check
 - 합성 알람이다. 실제 AWS 계정·CloudWatch 서명은 쓰지 않는다.
 - Code 노드의 본문 동일성 검사(`test_n8n_example.py`)는 호스트 `node`로 같은 JS를 실행한다. n8n 안에서 실행된 본문과의 대조는 사람 단계에서 `n8n-watch`의 리포트 1개 판정으로 한 번 더 확인한다.
 - n8n 버전이 바뀌면 노드 `typeVersion`이 달라질 수 있다. 새 버전에서는 이미지를 다시 고정하고 import·export로 확인한다.
+
+## Grafana 경유 예제 (6단계)
+
+`grafana-relay.json`은 Grafana 알람이 n8n을 거쳐 `POST /alerts/grafana`로 가는 길을 보여 준다. n8n은 **중계만** 한다: 본문을 바꾸거나 분석하거나 해제 알림을 따로 보내지 않고, 수신 서버의 응답 상태(200/400/401/503)를 Grafana에 그대로 돌려준다. 큐 저장 실패(503)를 200으로 감추지 않으므로 Grafana의 재전송 규칙이 그대로 작동한다.
+
+- 노드 3개: **Grafana 웹훅**(Webhook, Header Auth) → **알람 API 호출**(HTTP Request, 원본 본문을 JSON으로 그대로, 응답 전체·4xx/5xx도 오류로 중단하지 않음) → **수신 응답 그대로 반환**(Respond to Webhook, 상태 코드와 본문을 그대로).
+- Credential 두 개를 **사람이** 만든다(값은 파일·대화·커밋에 두지 않는다): ① 웹훅용 Header Auth(Grafana 연락 지점이 보내는 헤더와 같은 이름·값) ② 호출용 Header Auth(Name `X-Alert-Secret`, Value는 `.env`의 `ALERT_SECRET`).
+- 호출 주소는 `http://host.docker.internal:8080/alerts/grafana`다(앱 컨테이너 모드면 실제 수신 포트·호스트로 바꾼다).
+- Grafana 쪽 연락 지점의 대상 URL을 n8n 웹훅 주소(`http://<n8n>:5678/webhook/slack-lab-grafana`)로 바꾸고 인증 헤더를 위 ①과 맞추면 된다. 직접 수신(기본 프로비저닝)과 비교해 같은 리포트가 1개 올라오는지가 확인 기준이다.
+- 이미지는 위와 같은 고정 digest를 쓴다. 기존 CloudWatch 예제 볼륨(`slack-lab-n8n-check`)과 섞지 않는다.

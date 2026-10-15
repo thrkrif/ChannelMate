@@ -1499,3 +1499,41 @@ Ollama는 `qwen2.5:7b`만 적재(알람 리포트 LLM 호출 때문에 세션 �
 
 **기동 알림**: 중간 기동 7번째(7/7 소진) — 2026-10-15 약 22:30~22:39 KST(약 9분, 사전 알림은 최종 보고에 기록). 종료 후 컨테이너·볼륨·8080/9091/3000 리스너 0, `buildx_buildkit` 하나만 남음. 가벼운 기동은 변화 없음(5/7).
 
+## 58. 6단계 M48 n8n 경유 예제 + 측정·검증 도구 + 하드웨어 표 초안 (2026-10-15)
+
+**상태: 수행 완료(통합 판정 대기).** 환경: Apple Silicon(arm64), Docker Desktop, n8n `2.42.6`(5단계와 같은 고정 digest). 외부 접속 0 — Slack 호출은 로컬 기록용 스텁, n8n 대상도 로컬이고 Credential은 더미 값이다(실제 `.env` 값 아님).
+
+**만든 것**
+- `docs/n8n/grafana-relay.json` + README 절: Webhook(Header Auth) → HTTP Request(웹훅 본문을 `JSON.stringify($json.body)`로 그대로, 응답 전체·4xx/5xx도 중단하지 않음) → Respond to Webhook(수신 응답의 상태·본문을 그대로). 값을 바꾸는 노드·고정 상태 코드 없음.
+- 검증 소스셋 `src/verify/java/com/slack/labverify/{VerifyApplication,PauseControl}` + `build.gradle`의 `verify` 소스셋·`verifyBootRun`·`check` 의존. 운영 jar에 검증 코드 0(계약 `scripts/test_verify_sourceset.py`), `ArchitectureTest`에 운영→검증 의존 금지 규칙 추가.
+- `scripts/_mon_model.py`(순수 모형: 평가 격자·발화 조건·H 확정 규칙·모형 경계·시나리오 표·규칙 파일 대조), `_mon_run.py`(회차 실행기, 환경 주입), `_mon_env.py`(실제 환경·jar 실행기·DB 대상 확인), `_mon_stubs.py`(기록용 Slack 스텁·OpenAI 호환 LLM 스텁), `_mon_m48.py`(n8n 스모크). `scripts/monitoring-verify`에 `run`·`override`·`session start|calibrate`·`rag-prepare`·`teardown`·`n8n-smoke`·`stub slack|llm`·`stub metrics --mode` 추가.
+- `scripts/hw-measure`(5초 표본: docker stats·ps·vm_stat·swapusage·ollama ps·docker info·inspect → 판정), `scripts/p1-load`가 `SLACK_BASEURL`/`--slack-base-url`을 따름.
+- README·`docs/SETUP.md` 맨 앞에 하드웨어 요구사항 표 초안(6행, **[설정 상한]만** 채우고 [실측]은 "실측 대기").
+
+**C8 판정**
+| 항목 | 결과 | 증거 |
+|---|---|---|
+| 워크플로 구성·원형 본문·응답 상태 전달 설정·비밀 0 | 통과 12/12 | `scripts/test_n8n_grafana_example.py`(`python3`·`/usr/bin/python3`) |
+| 가상 시계 모형·실행기·CLI·스텁 | 통과 97/97 | `scripts/test_monitoring_verify.py`(양쪽 Python): 평가 위상 0~9.9초 × 경계 안 지연 전수에서 ① H=50·③ H=140·차단 H=95·부재 H=120 항상 발화, 비발화 H=20/110/40 항상 미발화, 스펙 값은 일부 영역 미발화, 유리한 표본으로도 H는 모형 하한(부재 120), 극값 표본 H(부재 85)는 불리한 입력에서 미발화, 경계 밖 입력은 exit 5, 지속 시간 덮어쓰기 옵션 0 |
+| `hw-measure` 파싱·판정 | 통과 18/18 | `scripts/test_hw_measure.py`(양쪽 Python) |
+| `p1-load` 스텁 모드(실제 채널 부모 메시지 0) | 통과 9/9 | `scripts/test_p1_load.py`(양쪽 Python) |
+| 검증 소스셋 계약 | 통과 6/6 | `scripts/test_verify_sourceset.py`, `PauseControlTest` 4건, `ArchitectureTest` |
+| 기존 테스트·빌드·코어 diff | 통과 | `./gradlew build` 615건·실패 0, `scripts/core-diff-check` 코어 diff 0 |
+| n8n 가벼운 스모크(가벼운 6번째) | 통과 25/25 | `scripts/monitoring-verify n8n-smoke` — 아래 |
+
+**n8n 가벼운 스모크 (가벼운 기동 6번째, 2026-10-15 22:56~22:58 KST, 약 2분)**: 프로젝트 `slack-lab-s6v-m48`, n8n 컨테이너 + 전용 볼륨 `slack-lab-n8n-s6smoke` + `verifyBootRun` 앱(echo, 더미 `ALERT_SECRET`, Slack 스텁) + M47 실제 발화 캡처 페이로드. 더미 Credential 3개와 워크플로 3개(앱 경유·전달 본문 기록용 스텁·틀린 Credential)를 CLI로 import하고 `publish:workflow`로 활성화한 뒤 n8n을 재기동해 웹훅을 등록했다.
+- **본문**: n8n → 스텁 전달 1건, 원본과 전달본의 JSON 필드·값 차이 0, `X-Alert-Secret`이 Credential 값으로 전달됨(값은 출력하지 않음).
+- **인증**: 웹훅 인증 없음·틀림 → 403이고 수신 서버로 전달 0. 틀린 Credential → 수신 서버가 401을 주고 n8n이 같은 상태·본문을 돌려줌. 알람 채널 리포트는 정상 경로에서 정확히 1개, 재전송·400·401은 0.
+- **응답 전달**: 200·재전송 200·400(`externalURL` 누락 본문)·401은 n8n의 상태·본문이 수신 서버 직접 응답과 같고, `rabbitmq`를 멈춰 만든 큐 저장 실패는 n8n도 **503을 그대로 반환**(200으로 숨기지 않음).
+- **PauseControl**: 플래그 생성 → 로그 `검증 소비 제어 상태=PAUSED` 1, 삭제 → `RUNNING` 1(전이 때만 불림).
+- **세션 장치**: DB 대상 확인(5432 게시 컨테이너 1개·프로젝트 레이블 일치) 통과, jar 실행기 `recovery list` 종료 0·`미해결 건 없음`, `teardown` 최종 확인 통과(n8n 컨테이너·볼륨·PID·리스너·ollama 0).
+- 정리 확인: `docker ps`에 `buildx_buildkit`만 남음, `s6v`/n8n 볼륨 0, 8080/9091/3000/5678/스텁 포트 리스너 0.
+
+**계획과 달랐던 점·한계 (부채는 PLAN 핸드오프 목록)**
+- **`monitoring-verify run`의 실제 유도 조작은 규칙 ③(플래그 파일 + 합성 요청)만 연결**했다. 규칙 ①②(스텁 영구 실패/수신 후 끊기, 앱 재기동), ④(네트워크 차단·file_sd 제거), 앱 30초 중단, 대시보드는 `NotImplementedError`로 막혀 있고 M49a 첫 회차에서 연결·검증한다. 회차 실행기·판정·모형은 가상 시계로 검증했지만 **실제 Grafana·앱에 대한 `run`은 아직 한 번도 돌리지 않았다**(남은 가벼운/중간 기동이 없어 M49a 안에서 처음 쓴다).
+- 스모크의 n8n 볼륨 이름은 계획대로 `slack-lab-n8n-s6smoke`이고 컨테이너만 세션 프로젝트 레이블을 달았다. 검증 끝에 도구가 명시적으로 지운다(`teardown`의 볼륨 정리는 `<프로젝트>_` 접두 볼륨만 본다).
+- `rag-prepare`는 jar 실행기·DB 대상 확인을 쓰도록 작성했지만 RAG 켠 색인은 이번 기동에서 돌리지 않았다(RAG 켠 첫 기동은 M49a B9).
+- 하드웨어 표는 컨테이너 메모리 **상한**만 채웠다. 호스트 RAM·디스크·Docker VM 값은 M49의 `hw-measure` 결과로 채운다.
+
+**기동 장부**: 가벼운 6/7(M44 1, M45 4, M48 1), 중간 7/7(변화 없음). 남은 가벼운 1은 H1 전용이다.
+

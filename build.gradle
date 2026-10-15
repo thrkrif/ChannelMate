@@ -58,3 +58,29 @@ tasks.named('test') {
     environment.keySet().removeIf { k -> testEnvStripPrefixes.any { k.startsWith(it) } }
     environment 'SLACK_LAB_LOG_DIR', layout.buildDirectory.dir('test-logs').get().asFile.path
 }
+
+// 6단계 M48: 검증 전용 소스셋. 운영 jar(bootJar)와 application.yml에는 들어가지 않고, main 출력에만 의존한다(main -> verify 방향 금지는 ArchitectureTest).
+// 용도: 알람 ③ 검증에서 큐 소비를 플래그 파일로 멈췄다 재개한다(src/verify/.../PauseControl).
+sourceSets {
+    verify {
+        compileClasspath += sourceSets.main.output
+        runtimeClasspath += sourceSets.main.output
+    }
+}
+configurations {
+    verifyImplementation.extendsFrom implementation
+    verifyRuntimeOnly.extendsFrom runtimeOnly
+    verifyCompileOnly.extendsFrom compileOnly
+    verifyAnnotationProcessor.extendsFrom annotationProcessor
+}
+dependencies {
+    // 상태 기계 시험용: verify 출력만 테스트 클래스패스에 올린다(스캔 루트가 달라 테스트 컨텍스트에는 들어가지 않는다)
+    testImplementation sourceSets.verify.output
+}
+tasks.register('verifyBootRun', JavaExec) {
+    group = 'verification'
+    description = '검증 전용 진입점(소비 일시정지 제어 포함)으로 앱을 띄운다. 운영 bootRun과 별개다.'
+    classpath = sourceSets.verify.runtimeClasspath
+    mainClass = 'com.slack.labverify.VerifyApplication'
+}
+tasks.named('check') { dependsOn 'verifyClasses' }

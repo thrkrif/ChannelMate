@@ -1,11 +1,22 @@
 #!/usr/bin/env python3
-"""6단계 모니터링 검증 도구. M45 `mgmt`, M46 `spike`·`provision`·`stub`이 있다(이후 마일스톤이 run 등을 더한다).
+"""6단계 모니터링 검증 도구. M45 `mgmt`, M46 `spike`·`provision`, M47 `replay`, M48 `run`·`override`·`session`·`rag-prepare`·`teardown`·`stub`.
 
 사용: scripts/monitoring-verify mgmt --mode host|app [--id <기동 ID>] [--keep-volumes]
       scripts/monitoring-verify spike [--only 이름,…]        M46 의미 스파이크 SP-1~SP-13(중간 기동 1회, 전용 프로젝트 `-spike`)
       scripts/monitoring-verify provision                    M46 프로비저닝 검증(중간 기동 1회, 실제 앱 + `scripts/monitoring start --host`)
+      scripts/monitoring-verify n8n-smoke                    M48 n8n 경유 예제 + PauseControl + 세션 장치 스모크(가벼운 기동 1회, Slack은 로컬 스텁)
       scripts/monitoring-verify replay                       M47 규칙 ② 실제 발화 페이로드 캡처 + /alerts/grafana 재생 3회(중간 기동 1회, Slack은 로컬 스텁)
-      scripts/monitoring-verify stub metrics --port P --token-file F    Bearer를 검사하는 가짜 /actuator/prometheus
+      scripts/monitoring-verify stub metrics --port P --token-file F [--mode ok|hang]   Bearer를 검사하는 가짜 /actuator/prometheus(hang=연결 후 무응답)
+      scripts/monitoring-verify stub slack --port P                    기록용 Slack 스텁(채널별 ok|fail|drop 제어, 경로·건수만 기록)
+      scripts/monitoring-verify stub llm --port P [--model M]          OpenAI 호환 스텁("다음 N회 오류" 장전)
+      scripts/monitoring-verify run --mode host|app --scenario <이름> [--repeat 5] [--dry-run] [--session D] [--out F]   알람 시나리오 회차 실행(M49a)
+          시나리오: rule1-fire|rule1-quiet|rule2-fire|rule2-quiet|rule3-fire|rule3-quiet|rule4-fire|rule4-quiet|rule4-absent|app-stop|dashboard
+          운영 지속 시간(for·평가 10초·유지 H)은 파일·모형 값 그대로이며 줄이는 인자가 없다. 시작할 때 Grafana의 규칙이 파일과 다르면 exit 3.
+      scripts/monitoring-verify override --session D --name N [--env K=V …]   앱 모드용 compose override(저장소 밖) 생성 / --remove로 삭제
+      scripts/monitoring-verify session start --id ID [--keep-volumes]   s6-session start + bootJar 한 번(jar 경로·sha256 기록)
+      scripts/monitoring-verify session calibrate --rule R --samples "ds,de;ds,de;ds,de"   보정 표본으로 H 확정(모형 경계 밖이면 exit 5)
+      scripts/monitoring-verify rag-prepare --session D --project P    세션 DB에 가상 문서 색인(DB 대상 확인 뒤 jar 실행기로)
+      scripts/monitoring-verify teardown --project P                   해당 프로젝트의 세션을 s6-session teardown으로 종료
       scripts/monitoring-verify stub webhook --port P                   웹훅을 받아 한 줄 JSON으로 출력하는 가짜 수신기
 
 기동 한 번(`s6-session`의 전용 compose 프로젝트)을 스스로 열고 닫는다. 비밀(관리 토큰)은 `.env`에서 메모리로만 읽고 어떤 출력·결과 파일에도
@@ -18,7 +29,7 @@
   C3       무토큰·오토큰·회전 전 토큰 각 5회 401, 새 토큰 5회 200, 비허용 경로·메서드 각 5회 성공(2xx·3xx) 0,
            리스너 검사(호스트: 9091은 127.0.0.1만 / 앱: 호스트 게시 0·network_mode host 0)
 외부 장비에서 LAN 주소로 접근하는 항목(H1)은 이 도구가 하지 않는다 — 사람 단계다.
-종료 코드: 0 전부 통과, 1 실패 항목 있음(또는 환경 문제), 2 사용법 오류.
+종료 코드: 0 합격, 1 미달/실패, 2 사용법 오류, 3 규칙·지속 시간 불일치, 4 관측 오류(Error·NoData로 Normal 확인 실패), 5 모형 경계 초과(채점 없이 멈춤).
 """
 import json
 import os
@@ -602,6 +613,19 @@ def cmd_provision(argv):
     return finish(rep)
 
 
+def cmd_n8n_smoke(argv):
+    if argv:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    import _mon_m48
+    rep = Report()
+    try:
+        _mon_m48.run_smoke(rep, s6, sys.modules[__name__])
+    except Exception as e:  # noqa: BLE001
+        rep.add("검증 중단", False, f"{type(e).__name__}: {str(e)[:200]}")
+    return finish(rep)
+
+
 def cmd_replay(argv):
     if argv:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
@@ -617,15 +641,20 @@ def cmd_replay(argv):
 
 def cmd_stub(argv):
     import _mon_spike as ms
+    import _mon_stubs
     opts = dict(zip(argv[1::2], argv[2::2]))
     if argv[:1] == ["metrics"] and "--port" in opts and "--token-file" in opts:
         with open(opts["--token-file"], encoding="utf-8") as f:
             token = f.read().strip()
         stub = ms.MetricsStub(int(opts["--port"]), token)
-        stub.start()
+        stub.start(opts.get("--mode", "ok"))
     elif argv[:1] == ["webhook"] and "--port" in opts:
         stub = ms.WebhookStub(int(opts["--port"]))
         stub.start()
+    elif argv[:1] == ["slack"] and "--port" in opts:
+        stub = _mon_stubs.SlackRecorder(int(opts["--port"])).start()
+    elif argv[:1] == ["llm"] and "--port" in opts:
+        stub = _mon_stubs.LlmStub(int(opts["--port"]), model=opts.get("--model", "stub-model")).start()
     else:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2
@@ -637,8 +666,152 @@ def cmd_stub(argv):
     return 0
 
 
+def _opt(argv, name, default=None):
+    return argv[argv.index(name) + 1] if name in argv and argv.index(name) + 1 < len(argv) else default
+
+
+def find_session(project):
+    prefix = "slack-lab-s6v-"
+    if not project.startswith(prefix):
+        return None
+    sid = project[len(prefix):]
+    root = os.environ.get("S6_SESSION_ROOT") or os.path.join(ROOT, ".runtime", "s6")
+    if not os.path.isdir(root):
+        return None
+    cands = sorted(d for d in os.listdir(root) if d.lower().startswith(sid + "-"))
+    return os.path.join(root, cands[-1]) if cands else None
+
+
+def cmd_run(argv):
+    import _mon_model as model
+    mode, scen = _opt(argv, "--mode"), _opt(argv, "--scenario")
+    repeat = int(_opt(argv, "--repeat", "5"))
+    if mode not in ("host", "app") or scen not in model.SCENARIOS or repeat < 1:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return model.EXIT_USAGE
+    rule, need_mode, variant = model.SCENARIOS[scen]
+    if need_mode != mode:
+        print(f"시나리오 {scen}는 --mode {need_mode}에서만 실행한다(규칙 파일이 모드별이다).", file=sys.stderr)
+        return model.EXIT_USAGE
+    plan = model.build_plan(scen, repeat)
+    if "--dry-run" in argv:
+        print(json.dumps({"scenario": scen, "mode": mode, "rule": rule, "plan": [{"variant": v, "h": h} for v, h in plan],
+                          "reset_wait_s": model.RULE_RESET_WAIT_S, "deadline_s": model.RULES[rule]["deadline"] if rule else None},
+                         ensure_ascii=False, indent=2))
+        return model.EXIT_OK
+    if rule is None:
+        print("app-stop·dashboard 시나리오의 실행은 M49a에서 연결한다(부채).", file=sys.stderr)
+        return model.EXIT_USAGE
+    import _mon_env
+    import _mon_spike as ms
+    sdir = _opt(argv, "--session") or os.environ.get("S6_SESSION")
+    if not sdir or not os.path.isdir(sdir):
+        print("세션이 필요하다: --session <디렉터리>(먼저 session start).", file=sys.stderr)
+        return model.EXIT_USAGE
+    env_file = _mon_env.read_env_file(os.path.join(ROOT, ".env"))
+    password = env_file.get("GRAFANA_ADMIN_PASSWORD", "")
+    graf = ms.Grafana(password)
+    if not graf.healthy():
+        print("Grafana에 접속할 수 없다(모니터링 스택이 떠 있어야 한다).", file=sys.stderr)
+        return model.EXIT_FAIL
+    import glob
+    docs = [json.load(open(f, encoding="utf-8")) for f in sorted(glob.glob(os.path.join(
+        ROOT, "infra", "monitoring", "grafana", "provisioning", "alerting", "rules-%s.json" % mode)))]
+    code, api = graf.request("GET", "/api/v1/provisioning/alert-rules")
+    problems = model.parity(model.rules_from_files(docs), api if code == 200 and isinstance(api, list) else [])
+    if problems:
+        print("규칙·지속 시간 불일치(exit 3): " + "; ".join(problems), file=sys.stderr)
+        return model.EXIT_RULES
+    print("NotImplemented 경로: 이 시나리오의 실제 유도 조작은 M49a 세션에서 연결·검증한다. 계획만 출력한다.", file=sys.stderr)
+    print(json.dumps({"scenario": scen, "plan": plan}, ensure_ascii=False))
+    return model.EXIT_USAGE
+
+
+def cmd_override(argv):
+    sdir = _opt(argv, "--session")
+    name = _opt(argv, "--name")
+    if not sdir or not name or not os.path.isdir(sdir):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    path = os.path.join(sdir, name)
+    if "--remove" in argv:
+        if os.path.exists(path):
+            os.remove(path)
+        print("삭제함")
+        return 0
+    extra = [a for i, a in enumerate(argv) if i > 0 and argv[i - 1] == "--env" and "=" in a]
+    print(write_override(sdir, name, [f"{k}: \"{v}\"" for k, _, v in (e.partition("=") for e in extra)]))
+    return 0
+
+
+def cmd_session(argv):
+    import _mon_model as model
+    if argv[:1] == ["start"]:
+        sid = _opt(argv, "--id")
+        if not sid:
+            print(__doc__.split("\n\n")[1], file=sys.stderr)
+            return 2
+        args = ["start", "--id", sid] + (["--keep-volumes"] if "--keep-volumes" in argv else [])
+        sdir = s6(*args).stdout.strip()
+        subprocess.run(["./gradlew", "bootJar", "-x", "test", "-q"], cwd=ROOT, check=True, capture_output=True)
+        libs = os.path.join(ROOT, "build", "libs")
+        jar = pick_jar(libs)
+        import hashlib
+        sha = hashlib.sha256(open(jar, "rb").read()).hexdigest()
+        with open(os.path.join(sdir, "jar.json"), "w", encoding="utf-8") as f:
+            json.dump({"jar": jar, "sha256": sha}, f)
+        print(sdir)
+        return 0
+    if argv[:1] == ["calibrate"]:
+        rule, raw = _opt(argv, "--rule"), _opt(argv, "--samples")
+        if rule not in model.RULES or not raw:
+            print(__doc__.split("\n\n")[1], file=sys.stderr)
+            return 2
+        try:
+            samples = [tuple(float(x) for x in item.split(",")) for item in raw.split(";")]
+        except ValueError:
+            return 2
+        code, h = model.calibrate(rule, samples)
+        print(json.dumps({"rule": rule, "exit": code, "h": h, "note": "H_sample은 경계 확인용이며 실제 H는 사실상 모형 하한"}, ensure_ascii=False))
+        return code
+    print(__doc__.split("\n\n")[1], file=sys.stderr)
+    return 2
+
+
+def cmd_rag_prepare(argv):
+    sdir, project = _opt(argv, "--session"), _opt(argv, "--project")
+    if not sdir or not project or not os.path.isdir(sdir):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    import _mon_env
+    ok, labels = _mon_env.db_target_check(project)
+    if not ok:
+        print(f"DB 대상 확인 실패: 5432 게시 컨테이너의 프로젝트 레이블 {labels} (기대: [{project}] 정확히 1개)", file=sys.stderr)
+        return 1
+    meta = json.load(open(os.path.join(sdir, "jar.json"), encoding="utf-8"))
+    docs = os.path.join(sdir, "rag-docs")
+    import shutil
+    shutil.rmtree(docs, ignore_errors=True)
+    shutil.copytree(os.path.join(ROOT, "docs", "rag-eval", "documents"), docs)  # 저장소 밖(세션 디렉터리)으로 복사해 색인한다
+    code, out, (t0, t1) = _mon_env.run_jar_cli(meta["jar"], "indexer", ["--rebuild"], sdir, project, extra={"RAG_DOCS_DIR": docs, "RAG_ENABLED": "true"})
+    print(json.dumps({"exit": code, "started": t0, "finished": t1, "tail": out.strip().splitlines()[-3:]}, ensure_ascii=False))
+    return 0 if code == 0 else 1
+
+
+def cmd_teardown(argv):
+    project = _opt(argv, "--project")
+    sdir = find_session(project or "")
+    if not sdir:
+        print("해당 프로젝트의 세션을 찾지 못했다.", file=sys.stderr)
+        return 2
+    p = s6("teardown", "--session", sdir, check=False)
+    print((p.stdout + p.stderr).strip())
+    return p.returncode
+
+
 def main(argv):
-    commands = {"mgmt": cmd_mgmt, "spike": cmd_spike, "provision": cmd_provision, "replay": cmd_replay, "stub": cmd_stub}
+    commands = {"mgmt": cmd_mgmt, "spike": cmd_spike, "provision": cmd_provision, "replay": cmd_replay, "n8n-smoke": cmd_n8n_smoke, "stub": cmd_stub, "run": cmd_run,
+                "override": cmd_override, "session": cmd_session, "rag-prepare": cmd_rag_prepare, "teardown": cmd_teardown}
     if not argv or argv[0] not in commands:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2
