@@ -491,5 +491,20 @@ try:
 finally:
     llm.stop()
 
+from unittest.mock import patch
+import _mon_dash
+import _mon_env
+import _mon_spike
+
+with tempfile.TemporaryDirectory() as d:
+    with patch.object(_mon_env, "read_env_file", return_value={}), patch.object(_mon_spike, "Grafana") as graf, patch.object(_mon_dash, "run", return_value=4) as dashboard:
+        rc = mv.cmd_run(["--mode", "host", "--scenario", "dashboard", "--session", d])
+        check("dashboard: 회차 실행·기동 없이 전용 검증기로 위임하고 종료 코드 보존", rc == 4 and dashboard.call_count == 1
+              and dashboard.call_args.args == (mv.ROOT, d, graf.return_value))
+    check("dashboard: 세션이 없으면 사용법 오류", mv.cmd_run(["--mode", "host", "--scenario", "dashboard", "--session", os.path.join(d, "missing")]) == 2)
+    with patch.object(_mon_dash, "run") as dashboard:
+        rc = mv.cmd_run(["--mode", "host", "--scenario", "dashboard", "--dry-run"])
+        check("dashboard: dry-run은 외부 호출 없이 계획만 출력", rc == 0 and not dashboard.called)
+
 print("전체", "PASS" if all(results) else "FAIL", sum(results), "/", len(results))
 sys.exit(0 if all(results) else 1)

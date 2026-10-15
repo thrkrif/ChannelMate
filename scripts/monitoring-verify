@@ -705,6 +705,16 @@ def cmd_run(argv):
                           "reset_wait_s": model.RULE_RESET_WAIT_S, "deadline_s": model.RULES[rule]["deadline"] if rule else None},
                          ensure_ascii=False, indent=2))
         return model.EXIT_OK
+    if scen == "dashboard":
+        sdir = _opt(argv, "--session") or os.environ.get("S6_SESSION")
+        if not sdir or not os.path.isdir(sdir):
+            return model.EXIT_USAGE
+        import _mon_dash
+        import _mon_env
+        import _mon_spike
+        env_file = _mon_env.read_env_file(os.path.join(ROOT, ".env"))
+        graf = _mon_spike.Grafana(env_file.get("GRAFANA_ADMIN_PASSWORD", ""))
+        return _mon_dash.run(ROOT, sdir, graf)
     if rule not in ("rule1", "rule2", "rule3"):
         print("이번 실행 범위는 호스트 규칙 ①②③이다.", file=sys.stderr)
         return model.EXIT_USAGE
