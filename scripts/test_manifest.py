@@ -32,7 +32,8 @@ def source_files():
     for f in os.listdir(scripts):
         p = os.path.join(scripts, f)
         # iCloud 중복 사본("… 2")과 테스트·캐시는 코드가 아니다
-        if os.path.isfile(p) and not f.startswith("test_") and not re.search(r" \d+$", f) and not f.endswith(".pyc"):
+        # 6단계 검증 스텁(`_mon_*`, `monitoring-verify`)은 Slack을 부르는 코드가 아니라 OpenAI 호환 응답("chat.completion") 같은 가짜 응답을 만든다
+        if os.path.isfile(p) and not f.startswith(("test_", "_mon_")) and f != "monitoring-verify" and not re.search(r" \d+$", f) and not f.endswith(".pyc"):
             yield p
 
 

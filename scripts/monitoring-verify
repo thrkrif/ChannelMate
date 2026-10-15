@@ -9,6 +9,7 @@
       scripts/monitoring-verify stub metrics --port P --token-file F [--mode ok|hang]   Bearer를 검사하는 가짜 /actuator/prometheus(hang=연결 후 무응답)
       scripts/monitoring-verify stub slack --port P                    기록용 Slack 스텁(채널별 ok|fail|drop 제어, 경로·건수만 기록)
       scripts/monitoring-verify stub llm --port P [--model M]          OpenAI 호환 스텁("다음 N회 오류" 장전)
+      scripts/monitoring-verify alarm-up --session D               B3 호스트 echo·모니터링 환경 준비
       scripts/monitoring-verify run --mode host|app --scenario <이름> [--repeat 5] [--dry-run] [--session D] [--out F]   알람 시나리오 회차 실행(M49a)
           시나리오: rule1-fire|rule1-quiet|rule2-fire|rule2-quiet|rule3-fire|rule3-quiet|rule4-fire|rule4-quiet|rule4-absent|app-stop|dashboard
           운영 지속 시간(for·평가 10초·유지 H)은 파일·모형 값 그대로이며 줄이는 인자가 없다. 시작할 때 Grafana의 규칙이 파일과 다르면 exit 3.
@@ -686,7 +687,10 @@ def find_session(project):
 def cmd_run(argv):
     import _mon_model as model
     mode, scen = _opt(argv, "--mode"), _opt(argv, "--scenario")
-    repeat = int(_opt(argv, "--repeat", "5"))
+    try:
+        repeat = int(_opt(argv, "--repeat", "5"))
+    except ValueError:
+        return model.EXIT_USAGE
     if mode not in ("host", "app") or scen not in model.SCENARIOS or repeat < 1:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return model.EXIT_USAGE
@@ -700,8 +704,8 @@ def cmd_run(argv):
                           "reset_wait_s": model.RULE_RESET_WAIT_S, "deadline_s": model.RULES[rule]["deadline"] if rule else None},
                          ensure_ascii=False, indent=2))
         return model.EXIT_OK
-    if rule is None:
-        print("app-stop·dashboard 시나리오의 실행은 M49a에서 연결한다(부채).", file=sys.stderr)
+    if rule not in ("rule1", "rule2", "rule3"):
+        print("이번 실행 범위는 호스트 규칙 ①②③이다.", file=sys.stderr)
         return model.EXIT_USAGE
     import _mon_env
     import _mon_spike as ms
@@ -715,17 +719,37 @@ def cmd_run(argv):
     if not graf.healthy():
         print("Grafana에 접속할 수 없다(모니터링 스택이 떠 있어야 한다).", file=sys.stderr)
         return model.EXIT_FAIL
-    import glob
-    docs = [json.load(open(f, encoding="utf-8")) for f in sorted(glob.glob(os.path.join(
-        ROOT, "infra", "monitoring", "grafana", "provisioning", "alerting", "rules-%s.json" % mode)))]
+    with open(os.path.join(ROOT, "infra", "monitoring", "grafana", "provisioning", "alerting", "rules-%s.json" % mode), encoding="utf-8") as stream:
+        docs = [json.load(stream)]
     code, api = graf.request("GET", "/api/v1/provisioning/alert-rules")
     problems = model.parity(model.rules_from_files(docs), api if code == 200 and isinstance(api, list) else [])
     if problems:
         print("규칙·지속 시간 불일치(exit 3): " + "; ".join(problems), file=sys.stderr)
         return model.EXIT_RULES
-    print("NotImplemented 경로: 이 시나리오의 실제 유도 조작은 M49a 세션에서 연결·검증한다. 계획만 출력한다.", file=sys.stderr)
-    print(json.dumps({"scenario": scen, "plan": plan}, ensure_ascii=False))
-    return model.EXIT_USAGE
+    import _mon_alarm
+    import _mon_run
+    try:
+        session = _mon_alarm.AlarmSession(sdir, sys.modules.get(__name__))
+        env = session.real_env()
+        code, results = _mon_run.run_rounds(env, rule, plan)
+    except (OSError, ValueError, RuntimeError):
+        code, results = model.EXIT_FAIL, [{"verdict": "induction", "reason": "알람 세션 실행 실패"}]
+    out = _opt(argv, "--out", os.path.join(sdir, "run-" + scen + ".json"))
+    with open(out, "w", encoding="utf-8") as stream:
+        json.dump({"scenario": scen, "exit": code, "results": results}, stream, ensure_ascii=False, indent=2)
+    return code
+
+
+def cmd_alarm_up(argv):
+    import _mon_alarm
+    sdir = _opt(argv, "--session") or os.environ.get("S6_SESSION")
+    if not sdir or not os.path.isfile(os.path.join(sdir, "ledger.json")):
+        return 2
+    try:
+        return _mon_alarm.AlarmSession(sdir, sys.modules.get(__name__)).up()
+    except (OSError, ValueError, RuntimeError):
+        print("B3 환경 준비 실패(세부 비밀값은 출력하지 않음).", file=sys.stderr)
+        return 1
 
 
 def cmd_override(argv):
@@ -814,7 +838,7 @@ def main(argv):
     if argv[:1] == ["bench"]:
         import _mon_bench
         return _mon_bench.main(argv[1:], sys.modules[__name__])
-    commands = {"mgmt": cmd_mgmt, "spike": cmd_spike, "provision": cmd_provision, "replay": cmd_replay, "n8n-smoke": cmd_n8n_smoke, "stub": cmd_stub, "run": cmd_run,
+    commands = {"alarm-up": cmd_alarm_up, "mgmt": cmd_mgmt, "spike": cmd_spike, "provision": cmd_provision, "replay": cmd_replay, "n8n-smoke": cmd_n8n_smoke, "stub": cmd_stub, "run": cmd_run,
                 "override": cmd_override, "session": cmd_session, "rag-prepare": cmd_rag_prepare, "teardown": cmd_teardown}
     if not argv or argv[0] not in commands:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
