@@ -1,0 +1,252 @@
+{
+  "apiVersion": 1,
+  "groups": [
+    {
+      "orgId": 1,
+      "name": "slack-lab",
+      "folder": "slack-lab",
+      "interval": "10s",
+      "rules": [
+        {
+          "uid": "slack-lab-r1",
+          "title": "복구 필요",
+          "condition": "E",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "slack-lab-loki",
+              "model": {
+                "refId": "A",
+                "queryType": "instant",
+                "expr": "last_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", dlq=\"fields.dlq\" | event=\"backlog_snapshot\" | unwrap dlq [30s]) by (role) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_unobserved\" | json event=\"event\" | event=\"backlog_unobserved\" [30s])) > 0) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", dlq=\"fields.dlq\" | event=\"backlog_snapshot\" | dlq=\"\" [30s])) > 0)"
+              }
+            },
+            {
+              "refId": "B",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "slack-lab-loki",
+              "model": {
+                "refId": "B",
+                "queryType": "instant",
+                "expr": "last_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", recovery=\"fields.recovery\" | event=\"backlog_snapshot\" | unwrap recovery [30s]) by (role) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_unobserved\" | json event=\"event\" | event=\"backlog_unobserved\" [30s])) > 0) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", recovery=\"fields.recovery\" | event=\"backlog_snapshot\" | recovery=\"\" [30s])) > 0)"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "D",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "D",
+                "type": "reduce",
+                "expression": "B",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "E",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "E",
+                "type": "math",
+                "expression": "$C >= 1 || $D >= 1"
+              }
+            }
+          ],
+          "for": "30s",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "slack_lab_rule": "recovery_needed",
+            "severity": "critical"
+          }
+        },
+        {
+          "uid": "slack-lab-r2",
+          "title": "LLM 최종 실패",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "slack-lab-loki",
+              "model": {
+                "refId": "A",
+                "queryType": "instant",
+                "expr": "(sum(count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"llm_final_failure\" | json event=\"event\" | event=\"llm_final_failure\" [5m])) or vector(0)) and on() (sum(count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\" | event=\"backlog_snapshot\" [5m])) > 0)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "for": "0s",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "slack_lab_rule": "llm_final_failure",
+            "severity": "warning",
+            "role": "-"
+          }
+        },
+        {
+          "uid": "slack-lab-r3",
+          "title": "큐 지속 적체",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "slack-lab-loki",
+              "model": {
+                "refId": "A",
+                "queryType": "instant",
+                "expr": "last_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", queue_ready=\"fields.queue_ready\" | event=\"backlog_snapshot\" | unwrap queue_ready [30s]) by (role) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_unobserved\" | json event=\"event\" | event=\"backlog_unobserved\" [30s])) > 0) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", queue_ready=\"fields.queue_ready\" | event=\"backlog_snapshot\" | queue_ready=\"\" [30s])) > 0)"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        9
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "for": "2m",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "slack_lab_rule": "queue_backlog",
+            "severity": "warning"
+          }
+        },
+        {
+          "uid": "slack-lab-r4",
+          "title": "앱 관측 불가",
+          "condition": "C",
+          "data": [
+            {
+              "refId": "A",
+              "relativeTimeRange": {
+                "from": 600,
+                "to": 0
+              },
+              "datasourceUid": "slack-lab-prom",
+              "model": {
+                "refId": "A",
+                "instant": true,
+                "range": false,
+                "expr": "max by (role) ((1 - up{job=\"slack-lab\",role=\"all\"}) or absent(up{job=\"slack-lab\",role=\"all\"}))"
+              }
+            },
+            {
+              "refId": "B",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "B",
+                "type": "reduce",
+                "expression": "A",
+                "reducer": "last"
+              }
+            },
+            {
+              "refId": "C",
+              "datasourceUid": "__expr__",
+              "model": {
+                "refId": "C",
+                "type": "threshold",
+                "expression": "B",
+                "conditions": [
+                  {
+                    "evaluator": {
+                      "type": "gt",
+                      "params": [
+                        0
+                      ]
+                    }
+                  }
+                ]
+              }
+            }
+          ],
+          "for": "1m",
+          "noDataState": "NoData",
+          "execErrState": "Error",
+          "labels": {
+            "slack_lab_rule": "app_unobservable",
+            "severity": "critical"
+          }
+        }
+      ]
+    }
+  ]
+}
