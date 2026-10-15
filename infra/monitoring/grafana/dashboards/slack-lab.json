@@ -1,0 +1,284 @@
+{
+  "uid": "slack-lab-overview",
+  "title": "slack-lab 개요",
+  "tags": [
+    "slack-lab"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {
+    "from": "now-15m",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "최신 적체(30초 안 최신 스냅샷)",
+      "type": "table",
+      "description": "관측 실패 줄이 30초 창에 있으면 값이 지워져 NoData(관측 불가)",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 7
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "slack-lab-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "last_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", queue_ready=\"fields.queue_ready\" | event=\"backlog_snapshot\" | unwrap queue_ready [30s]) by (role) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_unobserved\" | json event=\"event\" | event=\"backlog_unobserved\" [30s])) > 0) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", queue_ready=\"fields.queue_ready\" | event=\"backlog_snapshot\" | queue_ready=\"\" [30s])) > 0)",
+          "legendFormat": "queue_ready",
+          "datasource": {
+            "uid": "slack-lab-loki"
+          },
+          "queryType": "instant"
+        },
+        {
+          "refId": "B",
+          "expr": "last_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", defer=\"fields.defer\" | event=\"backlog_snapshot\" | unwrap defer [30s]) by (role) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_unobserved\" | json event=\"event\" | event=\"backlog_unobserved\" [30s])) > 0) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", defer=\"fields.defer\" | event=\"backlog_snapshot\" | defer=\"\" [30s])) > 0)",
+          "legendFormat": "defer",
+          "datasource": {
+            "uid": "slack-lab-loki"
+          },
+          "queryType": "instant"
+        },
+        {
+          "refId": "C",
+          "expr": "last_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", dead=\"fields.dead\" | event=\"backlog_snapshot\" | unwrap dead [30s]) by (role) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_unobserved\" | json event=\"event\" | event=\"backlog_unobserved\" [30s])) > 0) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", dead=\"fields.dead\" | event=\"backlog_snapshot\" | dead=\"\" [30s])) > 0)",
+          "legendFormat": "dead",
+          "datasource": {
+            "uid": "slack-lab-loki"
+          },
+          "queryType": "instant"
+        },
+        {
+          "refId": "D",
+          "expr": "last_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", retry=\"fields.retry\" | event=\"backlog_snapshot\" | unwrap retry [30s]) by (role) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_unobserved\" | json event=\"event\" | event=\"backlog_unobserved\" [30s])) > 0) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", retry=\"fields.retry\" | event=\"backlog_snapshot\" | retry=\"\" [30s])) > 0)",
+          "legendFormat": "retry",
+          "datasource": {
+            "uid": "slack-lab-loki"
+          },
+          "queryType": "instant"
+        },
+        {
+          "refId": "E",
+          "expr": "last_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", dlq=\"fields.dlq\" | event=\"backlog_snapshot\" | unwrap dlq [30s]) by (role) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_unobserved\" | json event=\"event\" | event=\"backlog_unobserved\" [30s])) > 0) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", dlq=\"fields.dlq\" | event=\"backlog_snapshot\" | dlq=\"\" [30s])) > 0)",
+          "legendFormat": "dlq",
+          "datasource": {
+            "uid": "slack-lab-loki"
+          },
+          "queryType": "instant"
+        },
+        {
+          "refId": "F",
+          "expr": "last_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", recovery=\"fields.recovery\" | event=\"backlog_snapshot\" | unwrap recovery [30s]) by (role) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_unobserved\" | json event=\"event\" | event=\"backlog_unobserved\" [30s])) > 0) unless on(role) (sum by (role) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"backlog_snapshot\" | json event=\"event\", recovery=\"fields.recovery\" | event=\"backlog_snapshot\" | recovery=\"\" [30s])) > 0)",
+          "legendFormat": "recovery",
+          "datasource": {
+            "uid": "slack-lab-loki"
+          },
+          "queryType": "instant"
+        }
+      ],
+      "options": {}
+    },
+    {
+      "id": 2,
+      "title": "큐 대기 p95(ms)",
+      "type": "stat",
+      "description": "",
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 6,
+        "h": 7
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "slack-lab-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "quantile_over_time(0.95, {app=\"slack-lab\",role=~\"worker|all\"} |= \"processing_metric\" | json event=\"event\", result=\"fields.result\", kind=\"fields.kind\", gen=\"fields.gen\", manual_run=\"fields.manual_run\", queue_wait_ms=\"fields.queue_wait_ms\" | event=\"processing_metric\" | result=\"Delivered\" | kind=\"answer\" | gen=\"0\" | manual_run!=\"true\" | unwrap queue_wait_ms [5m]) by (role)",
+          "legendFormat": "{{role}}",
+          "datasource": {
+            "uid": "slack-lab-loki"
+          },
+          "queryType": "instant"
+        }
+      ],
+      "options": {}
+    },
+    {
+      "id": 3,
+      "title": "LLM 시도 p95(ms)",
+      "type": "stat",
+      "description": "",
+      "gridPos": {
+        "x": 18,
+        "y": 0,
+        "w": 6,
+        "h": 7
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "slack-lab-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "quantile_over_time(0.95, {app=\"slack-lab\",role=~\"worker|all\"} |= \"processing_metric\" | json event=\"event\", llm_ms=\"fields.llm_ms\" | event=\"processing_metric\" | llm_ms >= 0 | unwrap llm_ms [5m]) by (role)",
+          "legendFormat": "{{role}}",
+          "datasource": {
+            "uid": "slack-lab-loki"
+          },
+          "queryType": "instant"
+        }
+      ],
+      "options": {}
+    },
+    {
+      "id": 4,
+      "title": "첫 정상 답변 p95(ms)",
+      "type": "stat",
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 7,
+        "w": 6,
+        "h": 7
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "slack-lab-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "quantile_over_time(0.95, {app=\"slack-lab\",role=~\"worker|all\"} |= \"processing_metric\" | json event=\"event\", result=\"fields.result\", kind=\"fields.kind\", gen=\"fields.gen\", manual_run=\"fields.manual_run\", answer_ms=\"fields.answer_ms\" | event=\"processing_metric\" | result=\"Delivered\" | kind=\"answer\" | gen=\"0\" | manual_run!=\"true\" | unwrap answer_ms [5m]) by (role)",
+          "legendFormat": "{{role}}",
+          "datasource": {
+            "uid": "slack-lab-loki"
+          },
+          "queryType": "instant"
+        }
+      ],
+      "options": {}
+    },
+    {
+      "id": 5,
+      "title": "처리 결과 분포(5분, 시도 단위)",
+      "type": "bargauge",
+      "description": "",
+      "gridPos": {
+        "x": 6,
+        "y": 7,
+        "w": 9,
+        "h": 7
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "slack-lab-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result, kind) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"processing_metric\" | json event=\"event\", result=\"fields.result\", kind=\"fields.kind\" | event=\"processing_metric\" [5m]))",
+          "legendFormat": "{{result}}/{{kind}}",
+          "datasource": {
+            "uid": "slack-lab-loki"
+          },
+          "queryType": "instant"
+        }
+      ],
+      "options": {}
+    },
+    {
+      "id": 6,
+      "title": "검색 결과 분포(5분)",
+      "type": "bargauge",
+      "description": "",
+      "gridPos": {
+        "x": 15,
+        "y": 7,
+        "w": 9,
+        "h": 7
+      },
+      "datasource": {
+        "type": "loki",
+        "uid": "slack-lab-loki"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (count_over_time({app=\"slack-lab\",role=~\"worker|all\"} |= \"rag_result\" | json event=\"event\", result=\"fields.result\" | event=\"rag_result\" [5m]))",
+          "legendFormat": "{{result}}",
+          "datasource": {
+            "uid": "slack-lab-loki"
+          },
+          "queryType": "instant"
+        }
+      ],
+      "options": {}
+    },
+    {
+      "id": 7,
+      "title": "역할별 가용성(up)",
+      "type": "stat",
+      "description": "",
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 12,
+        "h": 6
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "slack-lab-prom"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=\"slack-lab\"}",
+          "legendFormat": "{{role}}",
+          "datasource": {
+            "uid": "slack-lab-prom"
+          },
+          "instant": true
+        }
+      ],
+      "options": {}
+    },
+    {
+      "id": 8,
+      "title": "알람 상태(규칙 4개)",
+      "type": "alertlist",
+      "gridPos": {
+        "x": 12,
+        "y": 14,
+        "w": 12,
+        "h": 6
+      },
+      "options": {
+        "alertName": "",
+        "dashboardAlerts": false,
+        "groupBy": [],
+        "maxItems": 20,
+        "sortOrder": 1,
+        "stateFilter": {
+          "firing": true,
+          "pending": true,
+          "noData": true,
+          "normal": true,
+          "error": true
+        },
+        "viewMode": "list"
+      }
+    }
+  ]
+}

@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""6단계 모니터링 검증 도구. M45에서는 `mgmt` 하위 명령만 있다(이후 마일스톤이 spike·provision·run 등을 더한다).
+"""6단계 모니터링 검증 도구. M45 `mgmt`, M46 `spike`·`provision`·`stub`이 있다(이후 마일스톤이 run 등을 더한다).
 
 사용: scripts/monitoring-verify mgmt --mode host|app [--id <기동 ID>] [--keep-volumes]
+      scripts/monitoring-verify spike [--only 이름,…]        M46 의미 스파이크 SP-1~SP-13(중간 기동 1회, 전용 프로젝트 `-spike`)
+      scripts/monitoring-verify provision                    M46 프로비저닝 검증(중간 기동 1회, 실제 앱 + `scripts/monitoring start --host`)
+      scripts/monitoring-verify stub metrics --port P --token-file F    Bearer를 검사하는 가짜 /actuator/prometheus
+      scripts/monitoring-verify stub webhook --port P                   웹훅을 받아 한 줄 JSON으로 출력하는 가짜 수신기
 
 기동 한 번(`s6-session`의 전용 compose 프로젝트)을 스스로 열고 닫는다. 비밀(관리 토큰)은 `.env`에서 메모리로만 읽고 어떤 출력·결과 파일에도
 쓰지 않는다. 회전 시험(G-8 기본안)의 새 토큰은 이 도구가 만들어 저장소 밖 600 파일(호스트 모드) 또는 프로세스 환경(앱 모드)으로만 넘기고,
@@ -547,11 +551,84 @@ def cmd_mgmt(argv):
     return 0 if rep.ok else 1
 
 
-def main(argv):
-    if not argv or argv[0] != "mgmt":
+def finish(rep):
+    print(f"결과: {'통과' if rep.ok else '실패'} ({sum(r['ok'] for r in rep.rows)}/{len(rep.rows)})")
+    out = os.environ.get("MONITORING_VERIFY_OUT")
+    if out:
+        with open(out, "w", encoding="utf-8") as f:
+            json.dump(rep.rows, f, ensure_ascii=False, indent=2)
+    return 0 if rep.ok else 1
+
+
+def cmd_spike(argv):
+    only = None
+    if argv[:1] == ["--only"] and len(argv) == 2:
+        only = set(argv[1].split(","))
+    elif argv:
         print(__doc__.split("\n\n")[1], file=sys.stderr)
         return 2
-    return cmd_mgmt(argv[1:])
+    import _mon_spike_sp
+    rep = Report()
+    sdir = s6("start", "--id", "spike").stdout.strip()
+    sp = None
+    try:
+        sp = _mon_spike_sp.run_spike(rep, sdir, only)
+        print(json.dumps(getattr(sp, "results", {}), ensure_ascii=False, indent=2, default=str))
+        with open(os.path.join(sdir, "spike-results.json"), "w", encoding="utf-8") as f:
+            json.dump(getattr(sp, "results", {}), f, ensure_ascii=False, indent=2, default=str)
+        print(f"결과 파일: {os.path.join(sdir, 'spike-results.json')}")
+    except Exception as e:  # noqa: BLE001
+        rep.add("검증 중단", False, f"{type(e).__name__}: {str(e)[:200]}")
+    finally:
+        p = s6("teardown", "--session", sdir, check=False)
+        rep.add("teardown 최종 확인", p.returncode == 0, (p.stdout + p.stderr).strip()[:300])
+        if sp is not None and getattr(sp, "secret_dir", None):
+            import shutil
+            shutil.rmtree(sp.secret_dir, ignore_errors=True)  # 스파이크용 일회용 토큰 디렉터리
+    return finish(rep)
+
+
+def cmd_provision(argv):
+    if argv:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    import _mon_spike_sp
+    rep = Report()
+    try:
+        _mon_spike_sp.run_provision(rep, s6, sys.modules[__name__])
+    except Exception as e:  # noqa: BLE001
+        rep.add("검증 중단", False, f"{type(e).__name__}: {str(e)[:200]}")
+    return finish(rep)
+
+
+def cmd_stub(argv):
+    import _mon_spike as ms
+    opts = dict(zip(argv[1::2], argv[2::2]))
+    if argv[:1] == ["metrics"] and "--port" in opts and "--token-file" in opts:
+        with open(opts["--token-file"], encoding="utf-8") as f:
+            token = f.read().strip()
+        stub = ms.MetricsStub(int(opts["--port"]), token)
+        stub.start()
+    elif argv[:1] == ["webhook"] and "--port" in opts:
+        stub = ms.WebhookStub(int(opts["--port"]))
+        stub.start()
+    else:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    try:
+        while True:
+            time.sleep(3600)
+    except KeyboardInterrupt:
+        stub.stop()
+    return 0
+
+
+def main(argv):
+    commands = {"mgmt": cmd_mgmt, "spike": cmd_spike, "provision": cmd_provision, "stub": cmd_stub}
+    if not argv or argv[0] not in commands:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    return commands[argv[0]](argv[1:])
 
 
 if __name__ == "__main__":

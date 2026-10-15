@@ -1,0 +1,45 @@
+// 앱이 쓰는 회전 파일(.runtime/logs/<role>/slack-lab.log, M44)을 읽어 Loki로 보낸다. 앱은 Loki 주소를 모른다(수집기만 안다).
+// 경로는 역할 4개를 명시한다 — 회전 압축본·"이름 2" 복제본이 글롭에 걸리지 않게 하려는 것이다.
+// 결과 레이블은 app·role·level뿐이다(filename은 지운다 — 경로가 레이블이 되면 카디널리티와 호스트 경로가 새어 나간다).
+local.file_match "slack_lab" {
+  path_targets = [
+    {"__path__" = "/var/log/slack-lab/receiver/slack-lab.log", "role" = "receiver"},
+    {"__path__" = "/var/log/slack-lab/worker/slack-lab.log", "role" = "worker"},
+    {"__path__" = "/var/log/slack-lab/reactor/slack-lab.log", "role" = "reactor"},
+    {"__path__" = "/var/log/slack-lab/all/slack-lab.log", "role" = "all"},
+  ]
+}
+
+loki.source.file "slack_lab" {
+  targets       = local.file_match.slack_lab.targets
+  // 기동 전에 쌓인 옛 줄을 다시 보내지 않는다(재기동마다 같은 줄이 중복 적재되는 것을 막는다).
+  tail_from_end = true
+  forward_to    = [loki.process.slack_lab.receiver]
+}
+
+loki.process "slack_lab" {
+  // 원천 ts를 로그 시각으로 쓴다 — 수집 시각을 쓰면 알람 판정 시각이 수집 지연만큼 밀린다.
+  stage.json {
+    expressions = {ts = "ts", level = "level"}
+  }
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339Nano"
+  }
+  stage.labels {
+    values = {level = ""}
+  }
+  stage.static_labels {
+    values = {app = "slack-lab"}
+  }
+  stage.label_drop {
+    values = ["filename"]
+  }
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
