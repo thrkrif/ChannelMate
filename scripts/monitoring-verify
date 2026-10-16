@@ -715,8 +715,10 @@ def cmd_run(argv):
         env_file = _mon_env.read_env_file(os.path.join(ROOT, ".env"))
         graf = _mon_spike.Grafana(env_file.get("GRAFANA_ADMIN_PASSWORD", ""))
         return _mon_dash.run(ROOT, sdir, graf)
-    if rule not in ("rule1", "rule2", "rule3"):
-        print("이번 실행 범위는 호스트 규칙 ①②③이다.", file=sys.stderr)
+    if mode == "app" and scen != "app-stop" and rule not in ("rule4-block", "rule4-absent"):
+        return model.EXIT_USAGE
+    if mode == "host" and rule not in ("rule1", "rule2", "rule3"):
+        print("호스트 모드의 실행 범위는 규칙 ①②③이다.", file=sys.stderr)
         return model.EXIT_USAGE
     import _mon_env
     import _mon_spike as ms
@@ -740,9 +742,17 @@ def cmd_run(argv):
     import _mon_alarm
     import _mon_run
     try:
-        session = _mon_alarm.AlarmSession(sdir, sys.modules.get(__name__))
-        env = session.real_env()
-        code, results = _mon_run.run_rounds(env, rule, plan)
+        if mode == "app":
+            import _mon_app
+            env = _mon_app.AppSession(sdir).real_env()
+            if scen == "app-stop":
+                code, results = _mon_app.run_app_stop(env)
+            else:
+                code, results = _mon_run.run_rounds(env, rule, plan)
+        else:
+            session = _mon_alarm.AlarmSession(sdir, sys.modules.get(__name__))
+            env = session.real_env()
+            code, results = _mon_run.run_rounds(env, rule, plan)
     except (OSError, ValueError, RuntimeError, NotImplementedError) as e:
         # 원인을 모르면 세션 한 번(수 시간)을 다시 써야 해서 예외 종류와 메시지를 남긴다(우리 코드의 메시지라 비밀값은 없다).
         print(f"run 실패: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr)
