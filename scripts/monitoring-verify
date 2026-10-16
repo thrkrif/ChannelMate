@@ -9,13 +9,14 @@
       scripts/monitoring-verify stub metrics --port P --token-file F [--mode ok|hang]   Bearer를 검사하는 가짜 /actuator/prometheus(hang=연결 후 무응답)
       scripts/monitoring-verify stub slack --port P                    기록용 Slack 스텁(채널별 ok|fail|drop 제어, 경로·건수만 기록)
       scripts/monitoring-verify stub llm --port P [--model M]          OpenAI 호환 스텁("다음 N회 오류" 장전)
-      scripts/monitoring-verify alarm-up --session D               B3 호스트 echo·모니터링 환경 준비
+      scripts/monitoring-verify alarm-up --session D [--mode host|app]   B3 호스트 echo·모니터링 환경 준비(기본) / app: B4 앱 3역할+스텁+모니터링 준비(app-state.json은 마지막에만 쓴다)
       scripts/monitoring-verify run --mode host|app --scenario <이름> [--repeat 5] [--dry-run] [--session D] [--out F]   알람 시나리오 회차 실행(M49a)
           시나리오: rule1-fire|rule1-quiet|rule2-fire|rule2-quiet|rule3-fire|rule3-quiet|rule4-fire|rule4-quiet|rule4-absent|app-stop|dashboard
           운영 지속 시간(for·평가 10초·유지 H)은 파일·모형 값 그대로이며 줄이는 인자가 없다. 시작할 때 Grafana의 규칙이 파일과 다르면 exit 3.
       scripts/monitoring-verify override --session D --name N [--env K=V …]   앱 모드용 compose override(저장소 밖) 생성 / --remove로 삭제
       scripts/monitoring-verify session start --id ID [--keep-volumes]   s6-session start + bootJar 한 번(jar 경로·sha256 기록)
-      scripts/monitoring-verify session calibrate --rule R --samples "ds,de;ds,de;ds,de"   보정 표본으로 H 확정(모형 경계 밖이면 exit 5)
+      scripts/monitoring-verify session calibrate --rule R --samples "ds,de;ds,de;ds,de"   입력 표본으로 H 계산만(실측 보정으로 인정하지 않음, 경계 밖이면 exit 5)
+      scripts/monitoring-verify session calibrate --rule rule4-block|rule4-absent --collect --session D   실제 차단·복구 3회 수집 → calibration-<규칙>.json(앱 모드 run의 전제)
       scripts/monitoring-verify rag-prepare --session D --project P    세션 DB에 가상 문서 색인(DB 대상 확인 뒤 jar 실행기로)
       scripts/monitoring-verify teardown --project P                   해당 프로젝트의 세션을 s6-session teardown으로 종료
       scripts/monitoring-verify bench --mode host|app --row echo --session D [--minutes 30] [--out F] [--launcher bootrun|jar|verifyBootRun] [--build-first]
@@ -745,6 +746,14 @@ def cmd_run(argv):
         if mode == "app":
             import _mon_app
             env = _mon_app.AppSession(sdir).real_env()
+            if rule in ("rule4-block", "rule4-absent"):
+                # 입력 표본이나 중단된 보정은 인정하지 않는다: 실측 3표본 보정이 있어야 채점 회차를 시작한다.
+                h = _mon_app.calibration_h(sdir, rule)
+                if h is None:
+                    print("실측 차단 보정(session calibrate --collect)이 먼저 필요하다.", file=sys.stderr)
+                    return model.EXIT_USAGE
+                env.h_override = h
+                plan = model.build_plan(scen, repeat, h_override=h)
             if scen == "app-stop":
                 code, results = _mon_app.run_app_stop(env)
             else:
@@ -763,11 +772,35 @@ def cmd_run(argv):
     return code
 
 
+def cmd_alarm_up_app(sdir):
+    import _mon_alarm
+    import _mon_appup
+    import _mon_env
+    import _mon_spike as ms
+    with open(os.path.join(sdir, "ledger.json"), encoding="utf-8") as stream:
+        project = json.load(stream)["project"]
+    env = _mon_env.read_env_file(os.path.join(ROOT, ".env"))
+    io = _mon_appup.RealIo(sdir, sys.modules.get(__name__), env, project, ms.Grafana(env.get("GRAFANA_ADMIN_PASSWORD", "")), ROOT)
+    try:
+        code = _mon_appup.AppUp(sdir, io).up()
+    except (OSError, ValueError, RuntimeError):
+        print("B4 앱 환경 준비 실패(세부 비밀값은 출력하지 않음).", file=sys.stderr)
+        return 1
+    if code:
+        print(f"B4 앱 환경 준비 실패(exit {code}). 되돌림 결과는 bench-ledger.jsonl의 app-up 줄에 있다.", file=sys.stderr)
+    return code
+
+
 def cmd_alarm_up(argv):
     import _mon_alarm
     sdir = _opt(argv, "--session") or os.environ.get("S6_SESSION")
     if not sdir or not os.path.isfile(os.path.join(sdir, "ledger.json")):
         return 2
+    mode = _opt(argv, "--mode", "host")
+    if mode not in ("host", "app"):
+        return 2
+    if mode == "app":
+        return cmd_alarm_up_app(sdir)
     try:
         return _mon_alarm.AlarmSession(sdir, sys.modules.get(__name__)).up()
     except (OSError, ValueError, RuntimeError):
@@ -792,6 +825,25 @@ def cmd_override(argv):
     return 0
 
 
+def cmd_calibrate_collect(argv):
+    import _mon_app
+    import _mon_model as model
+    rule, sdir = _opt(argv, "--rule"), _opt(argv, "--session") or os.environ.get("S6_SESSION")
+    if rule not in ("rule4-block", "rule4-absent") or not sdir or not os.path.isdir(sdir):
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return model.EXIT_USAGE
+    try:
+        env = _mon_app.AppSession(sdir).real_env()
+        code, result = _mon_app.collect_calibration(env, rule)
+    except (OSError, ValueError, RuntimeError) as e:
+        print(f"보정 실패: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
+        return model.EXIT_FAIL
+    with open(os.path.join(sdir, f"calibration-{rule}.json"), "w", encoding="utf-8") as stream:
+        json.dump(result, stream, ensure_ascii=False, indent=2)
+    print(json.dumps({"rule": rule, "exit": code, "h": result.get("h"), "measured": True, "samples": len(result["samples"])}, ensure_ascii=False))
+    return code
+
+
 def cmd_session(argv):
     import _mon_model as model
     if argv[:1] == ["start"]:
@@ -810,6 +862,8 @@ def cmd_session(argv):
             json.dump({"jar": jar, "sha256": sha}, f)
         print(sdir)
         return 0
+    if argv[:1] == ["calibrate"] and "--collect" in argv:
+        return cmd_calibrate_collect(argv)
     if argv[:1] == ["calibrate"]:
         rule, raw = _opt(argv, "--rule"), _opt(argv, "--samples")
         if rule not in model.RULES or not raw:
@@ -820,7 +874,8 @@ def cmd_session(argv):
         except ValueError:
             return 2
         code, h = model.calibrate(rule, samples)
-        print(json.dumps({"rule": rule, "exit": code, "h": h, "note": "H_sample은 경계 확인용이며 실제 H는 사실상 모형 하한"}, ensure_ascii=False))
+        print(json.dumps({"rule": rule, "exit": code, "h": h, "measured": False,
+                          "note": "입력 표본 계산일 뿐 실측 보정 완료가 아니다(--collect만 인정). H_sample은 경계 확인용이며 실제 H는 사실상 모형 하한"}, ensure_ascii=False))
         return code
     print(__doc__.split("\n\n")[1], file=sys.stderr)
     return 2

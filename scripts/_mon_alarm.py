@@ -57,8 +57,8 @@ class StubClient:
         self.request("/__control", {"channel": channel, "mode": mode})
 
 
-def parity(grafana):
-    path = os.path.join(ROOT, "infra/monitoring/grafana/provisioning/alerting/rules-host.json")
+def parity(grafana, rules_file="rules-host.json"):
+    path = os.path.join(ROOT, "infra/monitoring/grafana/provisioning/alerting", rules_file)
     with open(path, encoding="utf-8") as stream:
         rules = model.rules_from_files([json.load(stream)])
     code, api = grafana.request("GET", "/api/v1/provisioning/alert-rules")

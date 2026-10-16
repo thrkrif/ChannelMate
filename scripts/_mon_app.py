@@ -16,6 +16,9 @@ STOP_S = 30          # C9.10 중단 시간
 RECOVER_S = 180      # C9.10 복구 상한
 QUIET_BLOCK_A = 150  # 비발화 (a): 차단 없이 유지
 QUIET_BLOCK_B = 40   # 비발화 (b): 차단 40초
+CAL_SAMPLES = 3      # 보정 표본 수(정확히 3)
+CAL_GRACE_S = 5      # 경계 밖 판정 전 관측 유예
+CAL_ABSENT_E_S = 60  # 부재의 D_e는 모형 상한이 없어 관측 대기 상한을 따로 둔다
 
 
 def real_cmd(args, timeout=60):
@@ -41,6 +44,7 @@ class AppEnv(me.RealEnv):
         self.role = None
         self.up_seen = {}
         self.cut_at = self.restore_at = None
+        self.h_override = None   # 실측 보정으로 확정한 발화 유지 시간(없으면 모형 값)
 
     # --- 명령 보조 -------------------------------------------------------------------------------------
     def containers(self, role, all_states=False):
@@ -150,7 +154,7 @@ class AppEnv(me.RealEnv):
         return self.cut_at
 
     def resolve(self, rule, variant, round_no):
-        hold = model.RULES[rule]["h_run"] if variant == "fire" else (QUIET_BLOCK_A if round_no % 2 else QUIET_BLOCK_B)
+        hold = (self.h_override or model.RULES[rule]["h_run"]) if variant == "fire" else (QUIET_BLOCK_A if round_no % 2 else QUIET_BLOCK_B)
         start = self.cut_at if self.cut_at is not None else self.timeline.get("t_start", self.now())
         self.sleep(max(0, start + hold - self.now()))
         if self.cut_at is not None:
@@ -163,6 +167,51 @@ class AppEnv(me.RealEnv):
             # 복구 뒤 up=1 가시화와 Normal 복귀를 기다린다. 못 보면 다음 회차를 막는 것이 맞다.
             self.wait(lambda: "up" in self.up_seen, 90, "복구 뒤 up=1 가시화 확인 실패")
         self.observe()
+
+    # --- 차단 보정(session calibrate): 실제 차단·복구로 D_s·D_e 표본 하나를 잰다 ---------------------------------------
+    def seen(self, key, seconds):
+        end = self.now() + seconds
+        while self.now() <= end:
+            self.observe()
+            if key in self.up_seen:
+                return True
+            self.sleep(1)
+        return key in self.up_seen
+
+    def calibrate_sample(self, rule, round_no):
+        """표본 하나. 반환 {'role','d_s','d_e'} 또는 {'role','bound':사유}. 어떤 경우에도 cleanup()으로 그 역할을 복원한다.
+        관측하지 못한 지연은 경계(D_s,max·D_e,max + 5초 유예)를 넘은 것으로 본다 — 못 본 값을 0으로 채우지 않는다."""
+        spec = model.RULES[rule]
+        self.started = self.now()
+        self.history, self.fired, self.visible = [], {}, {}
+        self.report_at = None
+        self.base_reports["rule4"] = self.slack.count("chat.postMessage", self.channel)
+        self.active = "rule4"
+        self.role = role_for(rule, round_no)
+        self.up_seen, self.cut_at, self.restore_at = {}, None, None
+        out = {"role": self.role}
+        try:
+            if rule == "rule4-absent":
+                self.remove_target(self.role)
+            else:
+                self.disconnect(self.role)
+            self.cut_at = self.now()
+            if not self.seen("down", spec["d_s_max"] + CAL_GRACE_S):
+                out["bound"] = "D_s 관측 실패 또는 경계 초과"
+                return out
+            out["d_s"] = self.up_seen["down"] - self.cut_at
+            self.restore_at = self.now()
+            if rule == "rule4-absent":
+                self.restore_targets()
+            else:
+                self.reconnect()
+            if not self.seen("up", (spec["d_e_max"] or CAL_ABSENT_E_S) + CAL_GRACE_S):
+                out["bound"] = "D_e 관측 실패 또는 경계 초과"
+                return out
+            out["d_e"] = self.up_seen["up"] - self.restore_at
+            return out
+        finally:
+            self.cleanup()
 
     def measured(self, rule):
         result = {"h": 0, "timeline": self.timeline}
@@ -313,3 +362,45 @@ class AppSession:
         return AppEnv(self.sdir, self.project, self.grafana, slack, self.env["ALERT_CHANNEL"],
                       self.data["receiver_url"], self.env["SLACK_SIGNING_SECRET"], "app",
                       session=self, targets_path=self.targets_path())
+
+
+def collect_calibration(env, rule):
+    """실제 차단·복구 표본을 정확히 3개 수집해 H를 확정한다. 반환 (종료 코드, 결과 딕트).
+    경계 초과 표본이 나오면 남은 표본을 재지 않고 즉시 EXIT_BOUND(채점 아님). 복원 실패는 EXIT_OBSERVE로 멈춘다."""
+    if rule not in ("rule4-block", "rule4-absent"):
+        raise ValueError("차단 보정은 rule4-block·rule4-absent만 지원한다")
+    samples, detail = [], []
+    result = {"rule": rule, "measured": True, "samples": detail}
+    for i in range(1, CAL_SAMPLES + 1):
+        try:
+            row = env.calibrate_sample(rule, i)
+        except RuntimeError as e:
+            detail.append({"role": role_for(rule, i), "error": type(e).__name__})
+            result.update(exit=model.EXIT_OBSERVE, h=None, reason="유도·복원 실패로 보정 중단")
+            return model.EXIT_OBSERVE, result
+        detail.append(row)
+        if "bound" in row:
+            result.update(exit=model.EXIT_BOUND, h=None, reason=row["bound"])
+            return model.EXIT_BOUND, result
+        if not model.in_bounds(rule, row["d_s"], row["d_e"]):
+            row["bound"] = "모형 경계 초과(D_s·D_e)"
+            result.update(exit=model.EXIT_BOUND, h=None, reason=row["bound"])
+            return model.EXIT_BOUND, result
+        samples.append((row["d_s"], row["d_e"]))
+    code, h = model.calibrate(rule, samples)
+    result.update(exit=code, h=h, reason=None if code == model.EXIT_OK else "최종 H가 150초 상한 초과")
+    return code, result
+
+
+def calibration_h(sdir, rule):
+    """세션의 실측 보정 결과 H. 입력 표본(`--samples`)·표본 수 3 아님·실패 기록은 인정하지 않는다(None)."""
+    path = os.path.join(sdir, f"calibration-{rule}.json")
+    try:
+        with open(path, encoding="utf-8") as stream:
+            data = json.load(stream)
+    except (OSError, ValueError):
+        return None
+    ok = (data.get("measured") is True and data.get("rule") == rule and data.get("exit") == model.EXIT_OK
+          and isinstance(data.get("samples"), list) and len(data["samples"]) == CAL_SAMPLES
+          and all("d_s" in row and "d_e" in row for row in data["samples"]) and isinstance(data.get("h"), int))
+    return data["h"] if ok else None

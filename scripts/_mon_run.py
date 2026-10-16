@@ -55,6 +55,7 @@ def run_round(env, rule, variant, round_no, h, settle_s=60, poll_s=1.0):
     fired_at = next((t-t0 for t, state in getattr(env, "history", []) if state == "firing"), None)
     report_at = None
     observation_error = None
+    limit = model.accept_s(rule)  # 합격선. 예산(spec["deadline"])은 경고용이고 유지 종료를 앞당기지 않는다(D-15 정리)
     if variant == "fire":
         while True:
             s = env.state(rule)
@@ -68,9 +69,9 @@ def run_round(env, rule, variant, round_no, h, settle_s=60, poll_s=1.0):
             if posts >= 1 and report_at is None:
                 report_at = env.now()
             elapsed = env.now() - t0
-            if elapsed >= spec["deadline"] or (elapsed >= h and posts >= 1):
+            if elapsed >= limit or (elapsed >= h and posts >= 1):
                 break
-            next_check = min(h, spec["deadline"]) if elapsed < h else spec["deadline"]
+            next_check = min(h, limit) if elapsed < h else limit
             env.sleep(min(poll_s, max(0.0, t0 + next_check - env.now())))
         res["hold_elapsed"] = round(env.now() - t0, 1)
     elif not getattr(env, "manages_hold", False):
@@ -93,7 +94,7 @@ def run_round(env, rule, variant, round_no, h, settle_s=60, poll_s=1.0):
         res.update(verdict="induction", reason="비발화 회차의 실측 H가 한계를 넘음(유도 문제)")
         return res
 
-    budget = spec["deadline"] + settle_s if variant == "fire" else settle_s
+    budget = limit + settle_s if variant == "fire" else settle_s
     end = max(t0 + budget, env.now() + settle_s)
     if fired_at is None:
         fired_at = next((t-t0 for t, state in getattr(env, "history", []) if state == "firing"), None)
@@ -151,9 +152,14 @@ def run_round(env, rule, variant, round_no, h, settle_s=60, poll_s=1.0):
             first_report = report_at if report_at is not None else env.now()
         elapsed = first_report - t0
         res["report_elapsed"] = round(elapsed, 1)
-        ok = fired_at is not None and posts == 1 and model.within_deadline(rule, elapsed)
+        ok = fired_at is not None and posts == 1 and model.within_accept(rule, elapsed)
+        # 합격선 판정과 내부 예산 경고를 따로 보고한다: 합격선 이내여도 예산을 넘었으면 숨기지 않는다.
+        res["accept_s"], res["budget_s"] = limit, spec["deadline"]
+        res["budget_exceeded_s"] = round(elapsed - spec["deadline"], 1) if elapsed > spec["deadline"] else 0
+        if ok and res["budget_exceeded_s"]:
+            res["budget_warning"] = f"합격선 {limit}초 이내, 내부 예산 {spec['deadline']}초 {res['budget_exceeded_s']}초 초과"
         res.update(verdict="pass" if ok else "fail",
-                   reason=None if ok else f"발화={fired_at is not None} 리포트={posts} 경과={elapsed:.0f}초(예산 {spec['deadline']})")
+                   reason=None if ok else f"발화={fired_at is not None} 리포트={posts} 경과={elapsed:.0f}초(합격선 {limit})")
     else:
         ok = fired_at is None and posts == 0
         res.update(verdict="pass" if ok else "fail", reason=None if ok else f"비발화인데 발화={fired_at is not None} 리포트={posts}")

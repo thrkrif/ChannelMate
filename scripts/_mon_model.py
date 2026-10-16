@@ -93,8 +93,21 @@ def simulate_fire(rule, h, d_s, d_e, phase):
 
 
 def within_deadline(rule, elapsed_s):
-    """장애 성립부터 리포트까지 예산 안인가."""
+    """장애 성립부터 리포트까지 내부 지연 예산(단계별 최악 합산) 안인가. 합격선이 아니라 경고 기준이다."""
     return elapsed_s <= RULES[rule]["deadline"]
+
+
+# C9 9.4 합격선(장애 성립 → 리포트 ≤180초)과 규칙별 내부 예산은 다른 기준이다. ③은 예산 174가 합격선 180보다 6초 빡빡해서
+# 예산을 판정에 쓰면 합격선을 바꾼 것과 같아진다(M49a S1a 1회차 175.2초). 다른 규칙은 예산이 합격선보다 훨씬 작아 기존 판정을 유지한다.
+ACCEPT_S = {"rule3": 180}
+
+
+def accept_s(rule):
+    return ACCEPT_S.get(rule, RULES[rule]["deadline"])
+
+
+def within_accept(rule, elapsed_s):
+    return elapsed_s <= accept_s(rule)
 
 
 def classify_unexpected(target_rule, other_rule, interruption_s=None):
