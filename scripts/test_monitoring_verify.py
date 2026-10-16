@@ -351,12 +351,20 @@ missing = ReportWhileHeldEnv("rule1", report_ok=False)
 missing_result = run.run_round(missing, "rule1", "fire", 1, 50, poll_s=7)
 check("실행기: 리포트 없으면 조작 성립 기준 deadline에서 해소하고 fail",
       missing.t_res == 83 and missing_result["verdict"] == "fail" and missing_result["reports"] == 0, str(missing_result))
-for delay, expected_resolve, verdict in ((8, 140, "pass"), (42, 165, "pass"), (60, 174, "fail")):
+for delay, expected_resolve, verdict in ((8, 140, "pass"), (42, 165, "pass"), (52, 175, "pass"), (60, 180, "fail")):
     queue = ReportWhileHeldEnv("rule3", report_delay=delay)
     queue_result = run.run_round(queue, "rule3", "fire", 1, 140)
     check(f"실행기: ③ 무회귀 리포트 지연 {delay}초 → {expected_resolve}초 해소·{verdict}",
           queue.t_res == expected_resolve and queue_result["verdict"] == verdict
           and queue_result["firing_elapsed"] == 123, str(queue_result))
+late3 = ReportWhileHeldEnv("rule3", report_delay=52)
+late3_result = run.run_round(late3, "rule3", "fire", 1, 140)
+check("실행기: ③ 175초 리포트 = 합격선(180) 충족·예산(174) 1초 초과 경고를 분리해 보고",
+      late3_result["verdict"] == "pass" and late3_result["accept_s"] == 180 and late3_result["budget_s"] == 174
+      and late3_result["budget_exceeded_s"] == 1 and "예산 174초" in late3_result["budget_warning"], str(late3_result))
+check("실행기: ③ 예산 안 리포트는 경고 없음", "budget_warning" not in run.run_round(ReportWhileHeldEnv("rule3", report_delay=8), "rule3", "fire", 1, 140))
+check("모형: 합격선 ③ 180·그 밖은 예산과 같음, 예산 함수는 불변", (mdl.accept_s("rule3") == 180 and mdl.accept_s("rule1") == 83
+      and mdl.within_accept("rule3", 180) and not mdl.within_accept("rule3", 180.1) and not mdl.within_deadline("rule3", 175.2)))
 queue_quiet = ReportWhileHeldEnv("rule3")
 queue_quiet_result = run.run_round(queue_quiet, "rule3", "quiet", 1, 110)
 check("실행기: ③ quiet는 H 뒤 즉시 해소·리포트 0 유지",
@@ -436,6 +444,11 @@ check("run: 모르는 시나리오·모드·반복이면 exit 2", cli("run", "--
 check("run: 세션 없이 실제 실행은 exit 2(시작하지 않는다)", cli("run", "--mode", "host", "--scenario", "rule1-fire")[0] == 2)
 check("session calibrate: 유리한 표본도 H=120, 경계 밖은 exit 5", cli("session", "calibrate", "--rule", "rule4-absent", "--samples", "10,10;10,10;10,10")[0] == 0
       and cli("session", "calibrate", "--rule", "rule4-absent", "--samples", "40,0")[0] == 5 and cli("session", "calibrate", "--rule", "bogus", "--samples", "1,1")[0] == 2)
+_rc, _out, _ = cli("session", "calibrate", "--rule", "rule4-absent", "--samples", "10,10;10,10;10,10")
+check("session calibrate: 입력 표본 출력은 실측 보정(measured)이 아님을 명시", _j.loads(_out)["measured"] is False)
+check("session calibrate --collect: 규칙·세션이 없거나 호스트 규칙이면 exit 2(조작 없음)",
+      cli("session", "calibrate", "--rule", "rule1", "--collect")[0] == 2 and cli("session", "calibrate", "--rule", "rule4-block", "--collect")[0] == 2)
+check("alarm-up: 모르는 --mode는 exit 2", cli("alarm-up", "--mode", "x", "--session", "/nonexistent")[0] == 2)
 check("teardown: 모르는 프로젝트는 exit 2", cli("teardown", "--project", "slack-lab-s6v-nonexistent-zzz")[0] == 2)
 with tempfile.TemporaryDirectory() as d:
     rc, out, _ = cli("override", "--session", d, "--name", "ov.yaml", "--env", "LLM_BASE_URL=http://localhost:9/v1")

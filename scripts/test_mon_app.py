@@ -249,5 +249,93 @@ class StopTests(Fake):
         self.assertGreaterEqual(results[0]["rule4_firings"], 2)
 
 
+class CalibrationTests(Fake):
+    """실제 차단 보정 경로: 가짜 명령·가상 시계. 지연은 query 응답 시각으로 흉내 낸다."""
+
+    def delayed(self, d_s, d_e):
+        base = self.query
+        marks = {}
+
+        def query(ds, expr, t=None, path=None):
+            role = expr.split('role="')[1].split('"')[0]
+            code, body = base(ds, expr)
+            cut, back = self.env.cut_at, self.env.restore_at
+            if cut is not None and back is None and self.clock.now() < cut + d_s:
+                body = {"data": {"result": [{"value": [0, "1.0"]}]}}      # 아직 down이 안 보임
+            if back is not None and self.clock.now() < back + d_e:
+                body = {"data": {"result": []}}                            # 아직 up이 안 보임
+            return code, body
+        self.g.query.side_effect = query
+
+    def test_exactly_three_real_samples_with_role_restore(self):
+        code, result = app.collect_calibration(self.env, "rule4-block")
+        self.assertEqual(code, model.EXIT_OK)
+        self.assertTrue(result["measured"])
+        self.assertEqual([r["role"] for r in result["samples"]], ["receiver", "worker", "reactor"])
+        self.assertEqual(len(result["samples"]), app.CAL_SAMPLES)
+        self.assertEqual(result["h"], 95)
+        disconnects = [c[-1] for _, c in self.calls if c[:3] == ["docker", "network", "disconnect"]]
+        connects = [c[-1] for _, c in self.calls if c[:3] == ["docker", "network", "connect"]]
+        self.assertEqual(disconnects, ["c-receiver", "c-worker", "c-reactor"])
+        self.assertEqual(connects, disconnects)        # 역할별 복원, 순서도 같다
+        self.assertIsNone(self.env.cut)
+
+    def test_absent_restores_targets_each_sample(self):
+        code, result = app.collect_calibration(self.env, "rule4-absent")
+        self.assertEqual(code, model.EXIT_OK)
+        self.assertEqual(result["h"], 120)
+        with open(self.targets) as stream:
+            self.assertEqual(json.load(stream), self.original)
+        self.assertFalse([c for _, c in self.calls if "network" in c])
+
+    def test_bound_exceeded_stops_without_more_samples_and_restores(self):
+        self.delayed(d_s=20, d_e=0)                      # 차단 D_s 경계 15 초과
+        code, result = app.collect_calibration(self.env, "rule4-block")
+        self.assertEqual(code, model.EXIT_BOUND)
+        self.assertEqual(len(result["samples"]), 1)
+        self.assertIsNone(result["h"])
+        self.assertIsNone(self.env.cut)                  # 중단했어도 복원됨
+        self.assertEqual(len([c for _, c in self.calls if c[:3] == ["docker", "network", "disconnect"]]), 1)
+
+    def test_late_up_visibility_is_bound_not_zero(self):
+        self.delayed(d_s=0, d_e=40)                      # D_e 경계 15(+유예 5) 초과
+        code, result = app.collect_calibration(self.env, "rule4-block")
+        self.assertEqual(code, model.EXIT_BOUND)
+        self.assertNotIn("d_e", result["samples"][0])
+
+    def test_restore_failure_stops_as_observe(self):
+        self.fails = {"network connect"}
+        code, result = app.collect_calibration(self.env, "rule4-block")
+        self.assertEqual(code, model.EXIT_OBSERVE)
+        self.assertEqual(len(result["samples"]), 1)
+
+    def test_samples_flag_is_not_accepted_as_calibration(self):
+        with open(os.path.join(self.tmp.name, "calibration-rule4-block.json"), "w") as stream:
+            json.dump({"rule": "rule4-block", "measured": False, "exit": 0, "h": 95, "samples": [{"d_s": 1, "d_e": 1}] * 3}, stream)
+        self.assertIsNone(app.calibration_h(self.tmp.name, "rule4-block"))
+
+    def test_only_complete_measured_result_is_accepted(self):
+        code, result = app.collect_calibration(self.env, "rule4-block")
+        path = os.path.join(self.tmp.name, "calibration-rule4-block.json")
+        with open(path, "w") as stream:
+            json.dump(result, stream)
+        self.assertEqual(app.calibration_h(self.tmp.name, "rule4-block"), 95)
+        result["samples"] = result["samples"][:2]
+        with open(path, "w") as stream:
+            json.dump(result, stream)
+        self.assertIsNone(app.calibration_h(self.tmp.name, "rule4-block"))
+        self.assertIsNone(app.calibration_h(self.tmp.name, "rule4-absent"))
+
+    def test_unsupported_rule_rejected(self):
+        with self.assertRaises(ValueError):
+            app.collect_calibration(self.env, "rule1")
+
+    def test_hold_override_used_in_fire_resolve(self):
+        self.env.h_override = 105
+        self.env.induce("rule4-block", "fire", 1)
+        self.env.resolve("rule4-block", "fire", 1)
+        self.assertEqual(self.env.measured("rule4-block")["h"], 105)
+
+
 if __name__ == "__main__":
     unittest.main()
