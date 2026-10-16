@@ -70,6 +70,7 @@ class RealEnv(run.Env):
             session.sleep = self.sleep
 
     manages_hold = True
+    log_selector = '{app="slack-lab",role="all"}'
 
     def now(self):
         return time.time()
@@ -116,7 +117,7 @@ class RealEnv(run.Env):
             ts = timestamp(row["ts"])
             if row.get("event") not in ("backlog_snapshot", "llm_final_failure") or ts in self.visible:
                 continue
-            code, body = self.g.query_range("loki", '{app="slack-lab",role="all"} |= "' + row["event"] + '"', ts-.001, ts+.001)
+            code, body = self.g.query_range("loki", self.log_selector + ' |= "' + row["event"] + '"', ts-.001, ts+.001)
             if code != 200 or not isinstance(body, dict):
                 continue
             for result in body.get("data", {}).get("result", []):

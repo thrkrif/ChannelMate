@@ -24,9 +24,9 @@ def timestamp(value):
     return datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp()
 
 
-def logs(sdir):
+def logs(sdir, roles=("all",)):
     rows = {}
-    for path in glob.glob(os.path.join(sdir, "all", "slack-lab.log*")):
+    for path in (path for role in roles for path in glob.glob(os.path.join(sdir, role, "slack-lab.log*"))):
         opener = gzip.open if path.endswith(".gz") else open
         with opener(path, "rt", encoding="utf-8", errors="replace") as stream:
             for line in stream:

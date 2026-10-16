@@ -22,10 +22,12 @@ class AppUpError(RuntimeError):
     pass
 
 
-def override_lines():
+def override_lines(failure=False):
     """앱 컨테이너가 호스트의 기록용 스텁으로 나가고, 로그·일시정지 플래그는 세션 디렉터리(/logs 마운트)에 둔다."""
     values = {"SLACK_BASEURL": f"http://host.docker.internal:{SLACK_PORT}", "SLACK_LAB_VERIFY_PAUSE_FLAG": "/logs/pause.flag",
               "SLACK_LAB_LOG_DIR": "/logs", "EXPERIMENT_SLOWMODEMS": "0", "EXPERIMENT_HALTAFTERSEND": "false", "RETRY_MAXRETRIES": "3"}
+    if failure:
+        values.update(LLM_BASE_URL="http://localhost:9/v1", LLM_VERIFYMODELONSTARTUP="false")
     return [k + ": " + json.dumps(v) for k, v in values.items()]
 
 
@@ -85,12 +87,12 @@ class AppUp:
         client.mode(TEST_CHANNEL, "ok")
         client.mode(self.io.env["ALERT_CHANNEL"], "ok")
 
-    def write_override(self):
-        path = self.io.write_override(self.sdir, OVERRIDE_NAME, override_lines())
+    def write_override(self, failure=False):
+        path = self.io.write_override(self.sdir, OVERRIDE_NAME, override_lines(failure))
         with open(path, encoding="utf-8") as stream:
             text = stream.read()
         with open(path, "w", encoding="utf-8") as stream:
-            stream.write(with_log_mount(text, self.sdir))
+            stream.write(with_log_mount(text.replace("LLM_CLIENT: echo", "LLM_CLIENT: ollama") if failure else text, self.sdir))
         self.undo.append(("override", lambda: os.path.exists(path) and os.remove(path)))
         self.override = path
         self.record("override")
@@ -179,7 +181,7 @@ class RealIo:
 
     def spawn_stub(self, name, kind, port):
         rc, out = self.s6("spawn", "--name", name, "--env-file", os.path.join(self.root, ".env"), "--",
-                          sys.executable, os.path.join(self.root, "scripts", "monitoring-verify"), "stub", kind, "--port", str(port))
+                          sys.executable, os.path.join(self.root, "scripts", "monitoring-verify"), "stub", kind, "--port", str(port), "--host", "0.0.0.0")
         if rc:
             raise RuntimeError("스텁 기동 실패")
         return int(out.strip())

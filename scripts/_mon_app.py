@@ -35,6 +35,8 @@ def role_for(rule, round_no):
 class AppEnv(me.RealEnv):
     """④ 전용. 상태·리포트·관측은 RealEnv를 그대로 쓰고 유도·해소·측정만 바꾼다."""
 
+    log_selector = '{app="slack-lab",role=~"receiver|worker|reactor"}'
+
     def __init__(self, *args, cmd=real_cmd, targets_path=None, **kwargs):
         super().__init__(*args, **kwargs)
         self.cmd, self.targets_path = cmd, targets_path
@@ -45,6 +47,11 @@ class AppEnv(me.RealEnv):
         self.up_seen = {}
         self.cut_at = self.restore_at = None
         self.h_override = None   # 실측 보정으로 확정한 발화 유지 시간(없으면 모형 값)
+
+    def rows(self):
+        from _mon_alarm import logs, timestamp
+        # 역할별 마운트에 기록되므로 호스트용 all 경로로는 앱 사건을 관측할 수 없다.
+        return [r for r in logs(self.sdir, ROLES) if timestamp(r["ts"]) >= self.started]
 
     # --- 명령 보조 -------------------------------------------------------------------------------------
     def containers(self, role, all_states=False):
