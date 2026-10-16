@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
@@ -60,7 +61,10 @@ if name == 's6-session':
         ledger['compose'].append(tail)
         write(sdir / 'ledger.json', ledger)
         if 'receiver' in tail and 'up' in tail:
-            logs('--force-recreate' in tail)
+            logs('LLM_CLIENT: ollama' in (sdir/'app-override.yaml').read_text() if 'app-override.yaml' in ' '.join(tail) else '--force-recreate' in tail)
+            if 'app-override.yaml' in ' '.join(tail):
+                with (sdir/'override-history.jsonl').open('a') as f:
+                    f.write(json.dumps((sdir/'app-override.yaml').read_text())+'\n')
         if 'build' in tail and os.environ.get('FAKE_BUILD_FAIL'):
             print('secret-value channel-private EvPRIVATE', file=sys.stderr); sys.exit(1)
 elif name == 'hw-measure':
@@ -295,10 +299,125 @@ class BenchTests(unittest.TestCase):
         self.assertEqual(self.result['hardware']['swap_growth_mib'], 1)
 
     def test_b3_invalid_mode_and_launcher_before_boot(self):
-        for args in (['--mode','app'], ['--launcher','jar'], ['--build-first']):
+        for args in (['--launcher','jar'], ['--build-first']):
             with self.subTest(args=args), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(bench.main(['--mode','host','--row','echo-mon','--session',str(self.sdir), *args],mv),2)
         self.assertFalse((self.sdir/'trace.jsonl').exists())
+
+    def fake_app_io(self, rules=False, alarm_posts=0, extra_posts=0):
+        from test_mon_appup import FakeIo
+        fake = FakeIo(str(self.sdir))
+        fake.root = str(self.root)
+        fake.project = 'slack-lab-s6v-test'
+        fake.env['ALERT_CHANNEL'] = 'ALARM'
+        fake.problems = ['rules'] if rules else []
+        fake.write_override = mv.write_override
+        fake.overrides = []
+        original = fake.s6
+        def s6(*args):
+            original(*args)
+            if args[0] == 'compose':
+                fake.overrides.append((self.sdir/'app-override.yaml').read_text())
+            p = subprocess.run([str(self.root/'scripts'/'s6-session'), *args], capture_output=True, text=True)
+            return p.returncode, p.stdout
+        fake.s6 = s6
+        def slack(base):
+            client = Mock()
+            def request(path):
+                if base.endswith('18963'):
+                    return {}
+                posts = self.sdir/'posts.json'
+                return {'chat.postMessage': {'CSTUBVERIFY': bench.read_json(str(posts)) if posts.exists() else 0,
+                                             'ALARM': alarm_posts, 'OTHER': extra_posts}}
+            client.request.side_effect = request
+            return client
+        fake.slack = slack
+        self.io_factory = self.stack.enter_context(patch.object(bench._mon_appup, 'RealIo', return_value=fake))
+        self.up_call = self.stack.enter_context(patch.object(bench._mon_appup.AppUp, 'up', autospec=True,
+                                                          side_effect=bench._mon_appup.AppUp.up))
+        return fake
+
+    def test_b4_appup_restart_order_and_alarm_posts_preserved(self):
+        fake = self.fake_app_io(alarm_posts=2)
+        self.assertEqual(self.run_bench('app', row='echo-mon'), 0, self.result)
+        self.up_call.assert_called_once()
+        args = self.io_factory.call_args.args
+        self.assertIs(args[1], mv)
+        self.assertEqual(args[3], 'slack-lab-s6v-test')
+        commands = [r for r in self.trace if r[:2] == ['s6-session','compose'] and 'receiver' in r]
+        self.assertEqual(len(commands), 3)
+        for command in commands:
+            self.assertIn(str(self.sdir.resolve()/'app-override.yaml'), command)
+            self.assertNotIn('bench-override.yaml', ' '.join(command))
+        self.assertEqual(commands[0][-9:], ['up','-d','--no-build','--pull','never','--wait','receiver','worker','reactor'])
+        for command in commands[1:]:
+            self.assertEqual(command[-10:], ['up','-d','--no-build','--pull','never','--no-deps','--force-recreate','receiver','worker','reactor'])
+        texts = [json.loads(line) for line in (self.sdir/'override-history.jsonl').read_text().splitlines()]
+        self.assertIn('LLM_CLIENT: ollama', texts[1])
+        self.assertIn('LLM_BASE_URL: "http://localhost:9/v1"', texts[1])
+        self.assertIn('LLM_VERIFYMODELONSTARTUP: "false"', texts[1])
+        self.assertIn('LLM_CLIENT: echo', texts[0])
+        # 같은 override를 덮어써야 후속 시나리오가 정상 설정을 그대로 이어받는다.
+        for text in texts:
+            self.assertIn('http://host.docker.internal:18962', text)
+            self.assertIn('RAG_ENABLED: "false"', text)
+            self.assertIn('CLASSIFICATION_ENABLED: "false"', text)
+            self.assertIn('SLACK_LAB_LOG_DIR: "/logs"', text)
+        self.assertIn('LLM_CLIENT: echo', texts[-1])
+        self.assertEqual(self.result['round'], 'B4')
+        self.assertEqual(self.result['alarm_posts'], 2)
+        self.assertEqual(self.result['stub_posts_total'], 86)
+        self.assertEqual(self.result['stub_posts'], 84)
+        self.assertEqual(self.result['log_counts']['attempts'], 57)
+        self.assertTrue(self.result['teardown_pending'])
+        self.assertTrue(bench.read_json(str(self.sdir/'app-state.json'))['ready'])
+        self.assertFalse(any('teardown' in r or 'stop' in r and r[0] == 's6-session' or 'bench-slack' in r for r in self.trace))
+        self.assertFalse(any('monitoring-stop' in r for r in fake.log))
+        self.assertEqual(sum(r[:2] == ['hw-measure','stop'] for r in self.trace), 1)
+
+    def test_b4_builds_session_jar_before_measurement(self):
+        self.fake_app_io()
+        self.assertEqual(self.run_bench('app', ['--build-first'], row='echo-mon'), 0, self.result)
+        build = next(i for i, r in enumerate(self.trace) if r[:2] == ['s6-session','compose'] and 'build' in r)
+        measure = next(i for i, r in enumerate(self.trace) if r[:2] == ['hw-measure','start'])
+        self.assertLess(build, measure)
+        self.assertEqual((self.sdir/'bench-app.jar').read_bytes(), b'jar')
+
+    def test_b4_preflight_rejects_shared_channel_before_measurement(self):
+        with (self.root/'.env').open('a') as stream:
+            stream.write('ALERT_CHANNEL=CSTUBVERIFY\n')
+        self.assertEqual(self.run_bench('app', row='echo-mon'), 1)
+        self.assertIn('채널 분리', self.result['reason'])
+        self.assertFalse(any(r[:2] == ['hw-measure','start'] for r in self.trace))
+
+    def test_failure_readiness_rejects_old_startup_evidence(self):
+        opts = argparse.Namespace(session=str(self.sdir), out=None, mode='app', build_first=False)
+        b = bench.Bench(opts, mv)
+        rows = [{'msg': message} for message in ('모델 확인을 건너뜀', 'LLM 웜업 결과=Failed')]
+        readings = iter([rows, rows + [{'msg':'워커 소비자 시작'}]])
+        def wait(predicate, seconds, reason):
+            if 'Failed' in reason:
+                self.assertFalse(predicate())
+                raise bench.BenchError(reason)
+        with patch.object(b, 'logs', side_effect=lambda: next(readings, rows)), \
+                patch.object(b, 'write_override'), patch.object(b, 'compose'), patch.object(b, 'wait', side_effect=wait):
+            with self.assertRaises(bench.BenchError):
+                b.start_app(True)
+
+    def test_b4_rules_mismatch_exit3_and_appup_rollback(self):
+        fake = self.fake_app_io(rules=True)
+        self.assertEqual(self.run_bench('app', row='echo-mon'), 3)
+        self.assertEqual(self.result['exit'], 3)
+        self.assertEqual(self.result['alarm_up_exit'], 3)
+        self.assertFalse((self.sdir/'app-state.json').exists())
+        self.assertIn(('run','monitoring-stop'), fake.log)
+        self.assertFalse(any(r[0] == 'p1-load' for r in self.trace))
+        self.assertEqual(sum(r[:2] == ['hw-measure','stop'] for r in self.trace), 1)
+
+    def test_b4_unexpected_channel_posts_fail(self):
+        self.fake_app_io(alarm_posts=1, extra_posts=1)
+        self.assertEqual(self.run_bench('app', row='echo-mon'), 1)
+        self.assertIn('테스트 채널 외', self.result['reason'])
 
     def test_host_order_and_wait(self):
         self.assertEqual(self.run_bench(), 0, self.stdout.getvalue())

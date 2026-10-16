@@ -3,6 +3,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest.mock import Mock
 
 import _mon_appup as up
 import _mon_model as model
@@ -102,6 +103,13 @@ class AppUpTests(unittest.TestCase):
 
     def kinds(self):
         return [e[:2] for e in self.io.log]
+
+    def test_real_io_stubs_listen_for_container_requests(self):
+        io = up.RealIo(self.tmp.name, Mock(), {}, "proj", Mock(), "/repo")
+        io.s6 = Mock(return_value=(0, "123"))
+        for kind, port in (("slack", up.SLACK_PORT), ("llm", up.LLM_PORT)):
+            self.assertEqual(io.spawn_stub("app-" + kind, kind, port), 123)
+            self.assertEqual(io.s6.call_args.args[-6:], ("stub", kind, "--port", str(port), "--host", "0.0.0.0"))
 
     def test_success_order_and_state_written_last(self):
         self.assertEqual(self.up.up(), model.EXIT_OK)

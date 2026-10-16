@@ -36,6 +36,25 @@ class Slack:
         self.modes[channel] = mode
 
 
+class AppLogTests(unittest.TestCase):
+    def test_rows_read_all_app_roles_and_rotated_logs(self):
+        import gzip
+        with tempfile.TemporaryDirectory() as sdir:
+            env = object.__new__(app.AppEnv)
+            env.sdir, env.started = sdir, 1000
+            for role in (*app.ROLES, "all"):
+                path = os.path.join(sdir, role)
+                os.makedirs(path)
+                with open(os.path.join(path, "slack-lab.log"), "w") as stream:
+                    stream.write(json.dumps({"ts": 1001, "msg": role}) + "\n")
+                with gzip.open(os.path.join(path, "slack-lab.log.1.gz"), "wt") as stream:
+                    stream.write(json.dumps({"ts": 999, "msg": "old"}) + "\n")
+                    stream.write(json.dumps({"ts": 1000, "msg": role + "-rotated"}) + "\n")
+            rows = env.rows()
+            self.assertEqual(len(rows), 6)
+            self.assertEqual({r["msg"] for r in rows}, {r + suffix for r in app.ROLES for suffix in ("", "-rotated")})
+
+
 class Fake(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -54,11 +73,22 @@ class Fake(unittest.TestCase):
         self.up = {r: 1.0 for r in app.ROLES}
         self.env = app.AppEnv(self.tmp.name, "proj", self.g, self.slack, "ALARM", "http://receiver", "secret", "app",
                               session=Mock(), cmd=self.cmd, targets_path=self.targets)
-        for target, replacement in (("_mon_alarm.logs", lambda _: []), ("_mon_env.time.time", self.clock.now),
+        for target, replacement in (("_mon_alarm.logs", lambda _, roles=("all",): []), ("_mon_env.time.time", self.clock.now),
                                     ("_mon_env.time.sleep", self.clock.sleep)):
             item = patch(target, replacement)
             item.start()
             self.addCleanup(item.stop)
+
+    def test_loki_visibility_queries_app_roles(self):
+        self.env.induce("rule4-block", "fire", 1)
+        row = {"ts": 1000, "event": "llm_final_failure"}
+        self.env.rows = Mock(return_value=[row])
+        self.g.query_range.return_value = (200, {"data": {"result": [{"values": [["unused", json.dumps(row)]]}]}})
+        self.env.observe()
+        expr = self.g.query_range.call_args.args[1]
+        self.assertIn('role=~"receiver|worker|reactor"', expr)
+        self.assertIn('llm_final_failure', expr)
+        self.assertEqual(self.env.visible[1000], 1000)
 
     def cmd(self, args):
         self.calls.append((self.clock.now(), args))
