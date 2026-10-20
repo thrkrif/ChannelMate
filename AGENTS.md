@@ -2,7 +2,7 @@
 
 모든 에이전트(Claude Code, Codex 등)가 공유하는 원본 규칙이다. `CLAUDE.md`는 이 파일을 참조만 한다.
 
-Slack 이벤트를 트리거로 AI가 답하는 구조를 단계적으로 만드는 학습용 프로젝트.
+Slack 이벤트를 트리거로 로컬 LLM이 답하는 셀프호스트 오픈소스 도구. 단계별로 만들어 왔고, 단계별 설계 기록을 함께 공개한다.
 
 - 요구사항 → [`PRD.md`](.claude/docs/PRD.md)
 - 구조·결정 기록 → [`ARCHITECTURE.md`](.claude/docs/ARCHITECTURE.md)
