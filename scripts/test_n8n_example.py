@@ -218,5 +218,30 @@ code = w["cmd_judge"](["a", "b", "--expect", "1", "--log", "x", "--state", os.pa
 check("start 없이 judge하면 종료 코드 2", code == 2)
 shutil.rmtree(state_dir, ignore_errors=True)
 
+# 구조화 JSON 수신 로그(6단계 M44): 텍스트와 같은 판정
+def as_json(lines):
+    out = []
+    for ln in lines:
+        m = re.match(r"^(\S+)\s+\w+ .*? : (.*)$", ln)
+        ts = datetime.datetime.fromisoformat(m.group(1).replace("Z", "+00:00")).astimezone(datetime.timezone.utc)
+        out.append(json.dumps({"v": 1, "ts": ts.strftime("%Y-%m-%dT%H:%M:%S.") + f"{ts.microsecond // 1000:03d}Z", "level": "INFO",
+                               "role": "receiver", "logger": "x", "msg": m.group(2)}, ensure_ascii=False))
+    return out
+
+
+os.makedirs(os.path.dirname(STATE), exist_ok=True)
+json.dump({"oldest": PUB_EPOCH - 1}, open(STATE, "w"))  # 앞선 judge가 상태 파일을 지울 수 있어 다시 적는다
+code, out = judge("1", [report(10)], as_json(LOG_OK))
+check("expect 1: JSON 수신 로그도 텍스트와 같은 판정(합격)", code == 0, out)
+json.dump({"oldest": PUB_EPOCH - 1}, open(STATE, "w"))
+code, out = judge("1", [report(181)], as_json(LOG_OK))
+check("expect 1: JSON 수신 로그, 181초 → 불합격", code == 1 and "180초" in out, out)
+json.dump({"oldest": PUB_EPOCH - 1}, open(STATE, "w"))
+code, out = judge("0", [], as_json(LOG_401))
+check("expect 0: JSON 수신 로그의 401 → 합격", code == 0, out)
+json.dump({"oldest": PUB_EPOCH - 1}, open(STATE, "w"))
+code, out = judge("1", [report(10)], as_json(LOG_OK[:1]) + LOG_401[:1])
+check("혼합(JSON+텍스트) 수신 로그도 읽는다", code == 0, out)
+
 print("전체", "PASS" if all(results) else "FAIL", sum(results), "/", len(results))
 sys.exit(0 if all(results) else 1)

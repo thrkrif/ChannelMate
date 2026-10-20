@@ -12,6 +12,9 @@
   scripts/p1-load dup               D1 동일 event_id 10회 동시 → D2 완료 뒤 재전달 1회
   scripts/p1-load distinct [N=10]   D3 서로 다른 N건 동시
 환경: SLACK_SIGNING_SECRET·SLACK_BOT_TOKEN·SLACK_TEST_CHANNEL(.env), P1_URL(기본 http://localhost:8080)
+      SLACK_BASEURL 또는 --slack-base-url <주소>: Slack API 기본 주소(기본 https://slack.com/api). 6단계 검증은 기록용 Slack 스텁을 가리켜
+      실제 채널에 부모 메시지를 올리지 않는다(앱의 SLACK_BASEURL과 같은 스텁을 쓴다).
+      P1_REPLY_TIMEOUT(순차 답글 대기 초, 기본 120), P1_SUMMARY_OUT(식별자 없는 완료 요약 JSON 경로)
 event_id는 EvP1<모드><실행시각>_<번호> 형식이다 — 로그를 이 접두어로 걸러 p1-metrics에 넘긴다.
 """
 import hashlib
@@ -67,16 +70,22 @@ def load_env():
 ENV = load_env()
 TOKEN, SECRET, CHANNEL = ENV["SLACK_BOT_TOKEN"], ENV["SLACK_SIGNING_SECRET"], ENV["SLACK_TEST_CHANNEL"]
 URL = ENV.get("P1_URL", "http://localhost:8080").rstrip("/")
+# 스텁 모드: --slack-base-url이 환경변수보다 우선한다. 인자는 모드 파싱 전에 떼어 낸다.
+if "--slack-base-url" in sys.argv:
+    _i = sys.argv.index("--slack-base-url")
+    ENV["SLACK_BASEURL"] = sys.argv[_i + 1]
+    del sys.argv[_i:_i + 2]
+API_BASE = (os.environ.get("SLACK_BASEURL") or ENV.get("SLACK_BASEURL") or "https://slack.com/api").rstrip("/")
 RUN = str(int(time.time()))
 BOT_USER = None
 
 
 def slack(method, payload=None, query=None):
     if query:
-        req = urllib.request.Request(f"https://slack.com/api/{method}?" + urllib.parse.urlencode(query),
+        req = urllib.request.Request(f"{API_BASE}/{method}?" + urllib.parse.urlencode(query),
                                      headers={"Authorization": f"Bearer {TOKEN}"})
     else:
-        req = urllib.request.Request(f"https://slack.com/api/{method}", data=json.dumps(payload or {}).encode(),
+        req = urllib.request.Request(f"{API_BASE}/{method}", data=json.dumps(payload or {}).encode(),
                                      headers={"Authorization": f"Bearer {TOKEN}",
                                               "Content-Type": "application/json; charset=utf-8"})
     with urllib.request.urlopen(req, timeout=15) as r:
@@ -162,7 +171,7 @@ def run_seq(n, mode="seq"):
         code, ms = send(f"EvP1{mode}{RUN}_{i + 1}", ts, QUESTIONS[i % len(QUESTIONS)])
         codes.append(code)
         tss.append(ts)
-        got = wait_replies([ts], 120)
+        got = wait_replies([ts], float(ENV.get("P1_REPLY_TIMEOUT", "120")))
         print(f"  {mode} {i + 1}/{n}: http={code} client_ms={ms} 답글까지 {got.get(ts, '시간 초과')}s")
     return tss, codes
 
@@ -232,7 +241,7 @@ def run_dup():
 def main():
     mode = sys.argv[1] if len(sys.argv) > 1 else ""
     arg = lambda i, d: int(sys.argv[i]) if len(sys.argv) > i else d
-    print(f"실행 {RUN} 모드={mode} 대상={URL}")
+    print(f"실행 {RUN} 모드={mode} 대상={URL} slack={'스텁' if API_BASE != 'https://slack.com/api' else '실제'}")
     if mode == "warmup":
         tss, codes = run_seq(2, "warmup")
         summary = audit("워밍업", tss, settle=3)
@@ -253,6 +262,12 @@ def main():
     bad = [c for c in codes if c != 200]
     print(f"HTTP 200이 아닌 응답: {len(bad)}건 {bad}")
     print("요약 " + json.dumps(summary, ensure_ascii=False))
+    if ENV.get("P1_SUMMARY_OUT"):
+        # 원본 식별자 없이도 세션 실행기가 완료와 HTTP 실패를 판정해야 한다.
+        path = ENV["P1_SUMMARY_OUT"]
+        with open(path + ".tmp", "w", encoding="utf-8") as f:
+            json.dump({"summary": summary, "http_errors": len(bad)}, f, ensure_ascii=False)
+        os.replace(path + ".tmp", path)
 
 
 main()

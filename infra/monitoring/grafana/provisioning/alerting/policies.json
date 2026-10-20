@@ -1,0 +1,40 @@
+{
+  "apiVersion": 1,
+  "policies": [
+    {
+      "orgId": 1,
+      "receiver": "slack-lab-null",
+      "group_by": [
+        "slack_lab_rule",
+        "role"
+      ],
+      "group_wait": "5s",
+      "group_interval": "1m",
+      "repeat_interval": "1h",
+      "routes": [
+        {
+          "receiver": "slack-lab-webhook",
+          "object_matchers": [
+            [
+              "slack_lab_rule",
+              "=~",
+              ".+"
+            ],
+            [
+              "alertname",
+              "!~",
+              "DatasourceNoData|DatasourceError"
+            ]
+          ],
+          "group_by": [
+            "slack_lab_rule",
+            "role"
+          ],
+          "group_wait": "5s",
+          "group_interval": "1m",
+          "repeat_interval": "1h"
+        }
+      ]
+    }
+  ]
+}

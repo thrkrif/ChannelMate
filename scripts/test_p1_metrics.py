@@ -132,5 +132,38 @@ check("잘못된 --since는 종료 코드 1", rc != 0, err)
 rc, _, err = run("", "--now", NOW)
 check("--now만 주면 종료 코드 1", rc != 0, err)
 
+# 12. 구조화 JSON 입력(6단계 M44): 텍스트·JSON·혼합 입력의 출력 차이 0 (레거시와 --since 5m --now 모두)
+import datetime, json, re
+
+
+def to_json_lines(text, every=1):
+    """텍스트 로그 줄을 포매터가 낼 JSON 줄로 바꾼다(ts는 UTC Z 밀리초, msg는 `: ` 뒤 원문). every=2면 짝수 줄만 바꿔 혼합 입력을 만든다."""
+    out = []
+    for i, ln in enumerate(text.splitlines(keepends=True)):
+        m = re.match(r"^(\S+)\s+(?:INFO|WARN|ERROR).*? : (.*?)(\n?)$", ln)
+        if not m or i % every:
+            out.append(ln)
+            continue
+        dt = datetime.datetime.fromisoformat(m.group(1)).astimezone(datetime.timezone.utc)
+        ts = dt.strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.microsecond // 1000:03d}Z"
+        out.append(json.dumps({"v": 1, "ts": ts, "level": "INFO", "role": "worker", "logger": "x", "msg": m.group(2)},
+                              ensure_ascii=False) + m.group(3))
+    return "".join(out)
+
+
+WINDOW_LOG = (metric(T_IN, "Delivered", "E1", "a1", "answer") + rag(T_IN, "found") + rag(T_IN, "unavailable", "embedding_timeout")
+              + line(T_IN, "적체 스냅샷 queue_ready=4 defer=0 dead=0 retry=1 dlq=0 recovery=0")
+              + line(T_IN, "적체 스냅샷 실패 reason=IOException") + line(T_IN, "적체 스냅샷")
+              + line(T_IN, "LLM 실패 → 실패 안내로 전환 event_id=E2 attempt_id=a2 error=x final_attempt=true"))
+for name, text, args in (("레거시", LEGACY_LOG, ()), ("구간", WINDOW_LOG, ("--since", "5m", "--now", NOW))):
+    rc0, base, _ = run(text, *args)
+    for label, conv in (("JSON", to_json_lines(text)), ("혼합", to_json_lines(text, every=2))):
+        rc1, out, err = run(conv, *args)
+        check(f"{name} 출력: 텍스트 입력과 {label} 입력의 차이 0", rc0 == 0 and rc1 == 0 and out == base, out + err)
+rc, out, _ = run(to_json_lines(WINDOW_LOG), "--since", "5m", "--now", NOW)
+check("JSON 입력에서도 관측 실패 두 줄은 스냅샷으로 세지 않음", rc == 0 and "queue_ready=4" in out and "스냅샷 실패 1건" in out, out)
+rc, out, err = run('{"v":1,"ts":"2026-10-09T01:02:00.000Z","level":"ERROR","msg":"실패","exc":"X: a\\n\tat b"}\n', "--since", "5m", "--now", NOW)
+check("예외 포함 JSON 줄도 종료하지 않음", rc == 0, err)
+
 print("전체", "PASS" if all(results) else "FAIL", sum(results), "/", len(results))
 sys.exit(0 if all(results) else 1)

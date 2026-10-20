@@ -23,8 +23,11 @@ LLM 시도 시리즈(③)의 한계: 예산 소진처럼 호출 없이 약 0ms�
 출력에는 event_id·attempt_id 원본을 쓰지 않는다(내부 집계 키로만 쓴다).
 """
 import math
+import os
 import re
 import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from _logline import restore  # noqa: E402  (6단계 M44: 구조화 JSON 줄을 옛 텍스트 줄로 복원)
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 
@@ -44,11 +47,13 @@ RESULT_LABEL = {  # (result, kind) → 표시 이름
 
 def read_lines(paths):
     if not paths:
-        yield from sys.stdin
+        for line in sys.stdin:
+            yield restore(line)
         return
     for p in paths:
         with open(p, errors="replace") as f:
-            yield from f
+            for line in f:
+                yield restore(line)
 
 
 def kv(line):

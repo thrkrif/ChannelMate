@@ -1,0 +1,97 @@
+{
+  "id": "slackLabGrafanaRelay",
+  "name": "slack-lab Grafana 경유 예제",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "slack-lab-grafana",
+        "authentication": "headerAuth",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "9f0c1a20-0000-4000-8000-000000000001",
+      "name": "Grafana 웹훅",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "9f0c1a20-0000-4000-8000-0000000000a1"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8080/alerts/grafana",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "id": "9f0c1a20-0000-4000-8000-000000000002",
+      "name": "알람 API 호출",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        260,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.body }}",
+        "options": {
+          "responseCode": "={{ $json.statusCode }}"
+        }
+      },
+      "id": "9f0c1a20-0000-4000-8000-000000000003",
+      "name": "수신 응답 그대로 반환",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        520,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Grafana 웹훅": {
+      "main": [
+        [
+          {
+            "node": "알람 API 호출",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "알람 API 호출": {
+      "main": [
+        [
+          {
+            "node": "수신 응답 그대로 반환",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -194,6 +194,13 @@ Slack 전송 장애 시 사용자 안내의 도달까지 보장하지는 않는�
 - **제외**: LangGraph(ADR-5 보류 유지), 분류 개선, 모델 확대, 도구 설치·모델 pull·터널 자동화.
 - 상세 합격선(C1~C13)·마일스톤은 5단계 계획(`PLAN.md`)을 따른다. 결과는 `docs/EXPERIMENT-LOG.md` §47~§53.
 
+### 6단계(모니터링 스택) 범위 확정 (2026-10-14, 인터뷰 결과)
+
+- **포함**: stdout JSON 구조화 로그와 회전 파일, Micrometer 지표(별도 관리 서버·Bearer 인증), `compose.monitoring.yaml` 선택 프로필(Loki·Grafana·Prometheus·Alloy), Grafana 알람 규칙 4개(복구 필요 적체, LLM 최종 실패, 큐 적체, 앱 관측 불가)와 `POST /alerts/grafana` 입력 어댑터·템플릿 폴백, n8n 후속 조치 예제, README/SETUP 맨 앞 하드웨어 요구사항 표(전체 켬 / AI·모니터링 끔).
+- **교체 가능성**: 도구 교체는 포트를 새로 만들지 않고 Micrometer·stdout 로그·`/alerts/{source}` 어댑터로 한다. `core/` 변경 0건.
+- **제외**: Anthropic 어댑터·클라우드 비용 가드·규칙 문구(벤더 중립) 변경은 7단계. LangGraph(ADR-5 보류 유지).
+- 상세 합격선(C1~C5·C8~C12)·마일스톤은 6단계 계획(`PLAN.md`)을 따른다.
+
 ## 5. 비기능 요구사항
 
 | 항목 | 요구 | 근거 |

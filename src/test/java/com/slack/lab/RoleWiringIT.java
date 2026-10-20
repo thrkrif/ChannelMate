@@ -196,4 +196,48 @@ class RoleWiringIT {
             }
         }
     }
+
+    @Test
+    void 워커는_알람_데코레이터를_primary로_갖고_원본_LLM과_알림기는_이름으로_남는다() {
+        try (ConfigurableApplicationContext ctx = start("worker", RAG_ON)) {
+            assertThat(ctx.getBean(com.slack.lab.core.port.LlmClient.class))
+                    .isInstanceOf(com.slack.lab.adapter.alert.AlertTemplateLlmClient.class);
+            assertThat(ctx.getBean("llmClient")).isInstanceOf(com.slack.lab.adapter.llm.EchoLlmClient.class);
+            assertThat(ctx.getBean(com.slack.lab.core.port.ChatNotifier.class))
+                    .isInstanceOf(com.slack.lab.adapter.alert.AlertFooterChatNotifier.class);
+            assertThat(ctx.getBean(com.slack.lab.core.service.RetrievalService.class))
+                    .isInstanceOf(com.slack.lab.config.AlertAwareRetrievalService.class);
+        }
+        try (ConfigurableApplicationContext ctx = start("reactor")) {
+            // 반응 역할은 알림기(SlackClient)만 갖고 알람 데코레이터는 없다 — 워커·all에서만 붙는다
+            assertThat(ctx.getBeansOfType(com.slack.lab.adapter.alert.AlertFooterChatNotifier.class)).isEmpty();
+        }
+    }
+
+    @Test
+    @org.junit.jupiter.api.extension.ExtendWith(org.springframework.boot.test.system.OutputCaptureExtension.class)
+    void Ollama_모드에서도_모델_확인은_원본으로_한_번_로그를_남긴다(org.springframework.boot.test.system.CapturedOutput output) throws Exception {
+        var server = com.sun.net.httpserver.HttpServer.create(new java.net.InetSocketAddress(java.net.InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/v1/models", ex -> reply(ex, "{\"data\":[{\"id\":\"m\"}]}"));
+        server.createContext("/v1/chat/completions", ex -> reply(ex, "{\"choices\":[{\"message\":{\"content\":\"pong\"}}]}"));
+        server.start();
+        try (ConfigurableApplicationContext ctx = start("worker", "--llm.client=ollama",
+                "--llm.base-url=http://127.0.0.1:" + server.getAddress().getPort() + "/v1")) {
+            // 로그 시스템은 기동 때 다시 초기화되어 시험용 어펜더가 남지 않는다 — 콘솔 출력으로 센다
+            assertThat(output.getOut().split("LLM 모델 확인됨", -1).length - 1).isEqualTo(1);
+            assertThat(ctx.getBean("llmClient")).isInstanceOf(com.slack.lab.adapter.llm.OpenAiCompatibleLlmClient.class);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    private static void reply(com.sun.net.httpserver.HttpExchange ex, String json) throws java.io.IOException {
+        ex.getRequestBody().readAllBytes();
+        byte[] b = json.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        ex.getResponseHeaders().add("Content-Type", "application/json");
+        ex.sendResponseHeaders(200, b.length);
+        try (var out = ex.getResponseBody()) {
+            out.write(b);
+        }
+    }
 }

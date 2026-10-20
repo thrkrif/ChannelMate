@@ -26,6 +26,8 @@ ROOT = os.path.dirname(HERE)
 FIRST_REPORT_LIMIT = 180   # 스펙 C7
 OBSERVE_AFTER_FIRST = 15   # 스펙 C7
 EXPECT_ZERO_OBSERVE = 60
+sys.path.insert(0, HERE)
+from _logline import restore  # noqa: E402
 TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))")
 
 
@@ -142,6 +144,7 @@ def cmd_judge(argv, env, clock=time, slack_fn=None, log_lines=None, rt=None):
     slack_fn = slack_fn or rt["slack"]
     eid = rt["event_id"](name, changed)
     lines = log_lines if log_lines is not None else open(logpath, encoding="utf-8", errors="replace").read().splitlines()
+    lines = [restore(x) for x in lines]  # 6단계 M44: 구조화 JSON 줄도 옛 텍스트 줄처럼 읽는다
     first_pub, published, auth_fail = scan_log(lines, eid, oldest)
     try:
         auth = slack_fn("auth.test")

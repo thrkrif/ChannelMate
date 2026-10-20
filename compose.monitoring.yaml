@@ -1,0 +1,99 @@
+# 6단계 M46: 선택형 모니터링 스택(프로필 `monitoring`). 기본 스택(compose.yaml)과 분리돼 있어 켜지 않으면 비용이 0이다.
+# 실행은 `scripts/monitoring`만 쓴다(프로젝트 이름·-f 쌍·토큰 파일·대상 파일을 한 곳에서 고정한다). 변수 기본값은 `down`·`config`가 변수 없이도
+# 돌게 하려는 것이다(필수로 두면 종료 도구의 `down`이 막힌다). 필수인 것은 GRAFANA_ADMIN_PASSWORD뿐이다.
+#   앱 → (회전 파일 .runtime/logs/<역할>/) → Alloy → Loki ┐
+#   앱 → (관리 서버 9091, Bearer)           → Prometheus ┴→ Grafana(대시보드 1·알람 4) → POST /alerts/grafana
+# 네트워크 소속은 `.omc/plans/stage6-plan.md`의 소속표가 정본이다: prometheus ∈ {scrape, monitoring}, grafana ∈ {alerts, monitoring},
+# loki·alloy ∈ {monitoring}. `monitoring`은 internal이라 Loki·Alloy는 호스트·인터넷에 닿지 않는다.
+# 이미지는 정식 패치 태그 + 다중 아키텍처 인덱스 digest로 고정한다(latest 금지, M46 스파이크에서 확정).
+x-mon: &mon
+  profiles: ["monitoring"]
+  restart: "no"
+
+services:
+  alloy:
+    <<: *mon
+    image: grafana/alloy:v1.20.1@sha256:2aa2099af76c0098d4af7a4d6e48f86cb66dc1a000222ad927a1c67c6542d13f
+    command:
+      - run
+      - --server.http.listen-addr=0.0.0.0:12345
+      - --storage.path=/var/lib/alloy/data
+      - /etc/alloy/config.alloy
+    volumes:
+      - ./infra/monitoring/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      # 앱이 쓰는 로그만 읽기 전용으로 본다. docker.sock은 마운트하지 않는다.
+      - ${SLACK_LAB_LOG_DIR_HOST:-./.runtime/logs}:/var/log/slack-lab:ro
+      - mon-alloy:/var/lib/alloy/data
+    networks: [monitoring]
+    mem_limit: 256m
+
+  loki:
+    <<: *mon
+    image: grafana/loki:3.7.8@sha256:1107dd5274e0ada47e42472b7a7e71f3b2a2fe878878108f3e2f9e51528f0193
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    volumes:
+      - ./infra/monitoring/loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - mon-loki:/loki
+    networks: [monitoring]
+    mem_limit: 1024m
+
+  prometheus:
+    <<: *mon
+    image: prom/prometheus:v3.13.4@sha256:87861b8cf91579109319ebc300f3f1060e6da9c05d6ae8ad15a20c879e84e32e
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+      - --storage.tsdb.retention.size=2GB
+    volumes:
+      - ./infra/monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # 대상 목록(file_sd)과 관리 토큰 파일은 scripts/monitoring이 만든다. 토큰은 설정 파일에 넣지 않고 600 파일로만 읽힌다.
+      - ${SLACK_LAB_MON_DIR:-./.runtime/monitoring}/targets:/etc/prometheus/targets:ro
+      - ${SLACK_LAB_SECRET_DIR:-${HOME}/.slack-lab-secrets}/metrics_token:/run/secrets/metrics_token:ro
+      - mon-prometheus:/prometheus
+    # 호스트 모드(앱을 호스트에서 bootRun)에서 host.docker.internal:9091로 닿는다.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks: [scrape, monitoring]
+    mem_limit: 512m
+
+  grafana:
+    <<: *mon
+    image: grafana/grafana:12.4.13@sha256:41bbc1b5e04416f81891806076db2a2ff60a5d4da5f78d36a88b033a8c199185
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD를 .env에 설정한다}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # 해소된 알림을 Alertmanager로 15분(기본) 재전송하면 알림 그룹이 비지 않아, 같은 규칙의 새 발화가 group_wait(5s)이 아니라
+      # group_interval 격자를 기다리고 짧은 발화는 통지가 빠진다(6단계 M49a B3 실측). 해소 한 번 전달 뒤에는 재전송이 필요 없다.
+      GF_UNIFIED_ALERTING_RESOLVED_ALERT_RETENTION: "10s"
+      # 연락 지점 프로비저닝이 읽는 값(비밀은 파일에 쓰지 않는다)
+      ALERT_SECRET: ${ALERT_SECRET:-}
+      GRAFANA_ALERT_WEBHOOK_URL: ${GRAFANA_ALERT_WEBHOOK_URL:-http://host.docker.internal:8080/alerts/grafana}
+    volumes:
+      - ./infra/monitoring/grafana/provisioning/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./infra/monitoring/grafana/provisioning/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./infra/monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      # 규칙 파일은 하나만 마운트한다(host/app은 ④의 식 한 줄만 다르고 UID가 같아 둘을 같이 올리면 충돌한다).
+      - ${SLACK_LAB_RULES_FILE:-./infra/monitoring/grafana/provisioning/alerting/rules-host.json}:/etc/grafana/provisioning/alerting/rules.json:ro
+      - ./infra/monitoring/grafana/provisioning/alerting/policies.json:/etc/grafana/provisioning/alerting/policies.json:ro
+      - ./infra/monitoring/grafana/provisioning/alerting/contact-points.json:/etc/grafana/provisioning/alerting/contact-points.json:ro
+      - mon-grafana:/var/lib/grafana
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "127.0.0.1:3000:3000"
+    networks: [alerts, monitoring]
+    mem_limit: 384m
+
+networks:
+  monitoring:
+    internal: true
+
+volumes:
+  mon-alloy:
+  mon-loki:
+  mon-prometheus:
+  mon-grafana:

@@ -37,11 +37,13 @@ import org.springframework.web.bind.annotation.RestController;
 public class AlertController {
 
     private static final Logger log = LoggerFactory.getLogger(AlertController.class);
+    private static final String GRAFANA = "grafana";
 
     private final AlertProperties props;
     private final EventPublisher publisher;
     private final Map<String, AlertNormalizer> normalizers;
     private final ObjectMapper mapper;
+    private final GrafanaAlertSplitter grafanaSplitter;
 
     public AlertController(AlertProperties props, EventPublisher publisher, List<AlertNormalizer> normalizers,
             ObjectMapper mapper) {
@@ -50,6 +52,7 @@ public class AlertController {
         this.normalizers = new java.util.HashMap<>();
         normalizers.forEach(n -> this.normalizers.put(n.source(), n));
         this.mapper = mapper;
+        this.grafanaSplitter = new GrafanaAlertSplitter(mapper);
     }
 
     @PostMapping("/alerts/{source}")
@@ -60,10 +63,19 @@ public class AlertController {
         if (!props.enabled() || normalizer == null) {
             return ResponseEntity.notFound().build(); // 꺼져 있거나 모르는 원천 — 존재를 드러내지 않는다
         }
-        String given = headerSecret != null && !headerSecret.isEmpty() ? headerSecret : tokenParam;
+        boolean grafana = GRAFANA.equals(source);
+        // Grafana는 헤더를 보낼 수 있다 — 시크릿이 URL(접근 로그)에 남는 쿼리 방식은 이 원천에서 받지 않는다.
+        String given = headerSecret != null && !headerSecret.isEmpty() ? headerSecret : grafana ? null : tokenParam;
+        if (grafana && tokenParam != null) {
+            log.warn("알람 인증 실패(쿼리 token 불허) → 401 source={}", source);
+            return ResponseEntity.status(401).build();
+        }
         if (!secretMatches(given)) {
             log.warn("알람 인증 실패 → 401 source={}", source);
             return ResponseEntity.status(401).build();
+        }
+        if (grafana) {
+            return receiveGrafana(normalizer, body);
         }
         String confirmUrl = subscriptionConfirmUrl(body);
         if (confirmUrl != null) {
@@ -101,6 +113,39 @@ public class AlertController {
                 yield ResponseEntity.status(503).build();
             }
         };
+    }
+
+    /**
+     * Grafana는 한 요청에 경보 여러 건이다. 전부 나누고 검증한 뒤(틀리면 전체 400, 큐 저장 0) 대상 건만 발행한다. 발행이 하나라도
+     * 확정되지 않으면 503 — Grafana가 재전송하고, 이미 저장된 건은 같은 중복 키라 워커의 선점이 흡수한다. 대상이 0건이어도 200이다.
+     */
+    private ResponseEntity<?> receiveGrafana(AlertNormalizer normalizer, byte[] body) {
+        List<AlertEvent> targets = new java.util.ArrayList<>();
+        try {
+            for (byte[] single : grafanaSplitter.split(body)) {
+                normalizer.normalize(Map.of(), single).ifPresent(targets::add);
+            }
+        } catch (IllegalArgumentException e) {
+            log.warn("알람 정규화 실패 → 400 source={} reason={}", GRAFANA, e.getMessage());
+            return ResponseEntity.badRequest().build();
+        }
+        boolean allStored = true;
+        for (AlertEvent alert : targets) {
+            var event = alert.toMessageEvent();
+            switch (publisher.publish(event, System.currentTimeMillis(), null)) {
+                case PublishResult.Enqueued e -> log.info("알람 발행 완료 event_id={} source={}", event.eventId(), GRAFANA);
+                case PublishResult.Failed f -> {
+                    allStored = false;
+                    log.error("알람 발행 실패 event_id={} reason={}", event.eventId(), f.error().text());
+                }
+                case PublishResult.Unconfirmed u -> {
+                    allStored = false;
+                    log.error("알람 발행 확인 불가 event_id={} reason={}", event.eventId(), u.error().text());
+                }
+            }
+        }
+        log.info("Grafana 알람 처리 targets={}", targets.size());
+        return allStored ? ResponseEntity.ok().build() : ResponseEntity.status(503).build();
     }
 
     private boolean secretMatches(String given) {
