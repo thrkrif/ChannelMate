@@ -1,7 +1,7 @@
 {
   "display_information": {
     "name": "slack-lab",
-    "description": "Slack 이벤트를 트리거로 AI가 답하는 학습용 봇"
+    "description": "Slack 멘션에 로컬 LLM이 스레드로 답하는 셀프호스트 봇"
   },
   "features": {
     "bot_user": {
