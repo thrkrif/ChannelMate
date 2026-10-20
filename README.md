@@ -2,7 +2,7 @@
 
 Slack 이벤트를 트리거로 AI가 답하는 구조를 단계적으로 만드는 학습용 프로젝트. LLM은 로컬 Ollama(OpenAI 호환 스키마)를 쓰므로 API 비용이 들지 않는다.
 
-**현재 `v0.5.0`(5단계까지 완료).** Slack 멘션 → 수신 API → RabbitMQ → 워커(Ollama, 선택적 RAG) → 스레드 답글. 같은 워커가 CloudWatch(SNS) 형식 알람도 받아 리포트를 올린다. 선택 기능(RAG·알람·요청 분류)은 `.env`로 켠다.
+**현재 `v0.6.0`(6단계까지 완료, 검증 범위는 [RELEASE-LIMITS](docs/RELEASE-LIMITS.md) 참고).** Slack 멘션 → 수신 API → RabbitMQ → 워커(Ollama, 선택적 RAG) → 스레드 답글. 같은 워커가 CloudWatch(SNS) 형식 알람도 받아 리포트를 올린다. 선택 기능(RAG·알람·요청 분류)은 `.env`로 켠다.
 
 ## 하드웨어 요구사항 (6단계 실측 — 일부 미달·미측정)
 
