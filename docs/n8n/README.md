@@ -22,7 +22,7 @@ JSON은 아래 고정 이미지에서 import한 뒤 export한 결과와 노드·
 
 ## 실행
 
-서버 쪽 준비: `.env`에 `ALERT_SECRET`과 `ALERT_CHANNEL`을 둘 다 채운다(`scripts/env-check`로 점검). 알람 리포트도 LLM을 부르므로 수신 서버(`bootRun`)와 Ollama가 떠 있어야 한다.
+서버 쪽 준비: `.env`에 `ALERT_SECRET`과 `ALERT_CHANNEL`을 둘 다 채운다(`scripts/env-check`로 점검). 이 예제의 `cloudwatch` 알람 리포트는 LLM이 문안을 만들므로 수신 서버(`bootRun`)와 Ollama가 떠 있어야 한다. Grafana 규칙 4종 중 `llm_final_failure`·`app_unobservable`은 LLM을 부르지 않고 고정 문구를 쓴다.
 
 ```bash
 # 이미지는 버전과 digest로 고정한다(latest·stable·무태그 금지). 이 예제는 n8n 2.42.6에서 확인했다.

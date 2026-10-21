@@ -83,6 +83,18 @@ ngrok http 8080                                   # 별도 터미널, 나온 htt
 2. 채널에서 `@slack-lab 안녕` 처럼 멘션한다.
 3. 기대 결과: 멘션에 **👀 반응 1개**, **스레드 답글 1개**. 첫 호출은 모델 적재로 느릴 수 있다.
 
+## 기능 켜고 끄기
+
+| 기능 | 스위치 | 기본 | 비고 |
+|---|---|---|---|
+| LLM 클라이언트 | `LLM_CLIENT=ollama\|echo` | `ollama` | `echo`는 모델 호출이 없는 검증용이다(실제 답변 아님). 실제 답변은 지금 Ollama(OpenAI 호환 엔드포인트, `LLM_BASE_URL`)만 검증했다. API 키를 보내는 설정은 아직 없어 키가 필요한 클라우드 API는 쓸 수 없다. `LLM_MODEL`은 필수다 |
+| RAG(문서 근거 답변) | `RAG_ENABLED` | 꺼짐 | 꺼도 기존 흐름은 그대로다. 끄면 모델의 일반 지식으로만 답한다(작은 로컬 모델은 사내 정보를 그럴듯하게 틀릴 수 있다) |
+| 요청 분류 | `CLASSIFICATION_ENABLED` | 꺼짐 | 켜면 `CLASSIFICATION_MODEL`이 필요하고 `LLM_CLIENT=echo`와 함께 쓸 수 없다 |
+| 알람 직접 수신 | `ALERT_SECRET`+`ALERT_CHANNEL` | 꺼짐 | 둘 다 채우면 `/alerts/{source}`가 켜진다 |
+| 모니터링 지표·스택 | `MANAGEMENT_METRICS_TOKEN`, 프로필 `monitoring` | 꺼짐 | 아래 "모니터링 지표 켜기" |
+
+알람 리포트와 LLM: Grafana 규칙 중 `llm_final_failure`·`app_unobservable`은 고정 문구만 쓰고 LLM을 부르지 않는다. `recovery_needed`·`queue_backlog`는 LLM이 문안을 만들고, LLM이 실패하거나 시간이 넘으면 고정 문구로 대신한다. CloudWatch 알람은 항상 LLM이 문안을 만들며 이 고정 문구 대체는 적용되지 않는다. **LLM 없이 알람만 쓰는 구성(알람 전용 모드)은 제공하지 않으며 검증하지 않았다.** `LLM_CLIENT=echo`로 돌리면 LLM을 거치는 규칙의 리포트에 템플릿 대신 echo 응답이 나올 수 있다(확인하지 않음).
+
 ## 모니터링 지표 켜기 (선택, 6단계)
 
 기본 구성에서는 꺼져 있고, 안 켜도 앱은 5단계와 똑같이 동작한다. 지표(Prometheus 형식)를 내보내려면 `.env`에 아래 두 키를 **직접** 넣는다. 값은 이 저장소 어디에도 커밋하지 않는다(`.githooks/pre-commit`이 값이 있는 줄을 막는다).
