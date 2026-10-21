@@ -1655,3 +1655,8 @@ Ollama는 `qwen2.5:7b`만 적재(알람 리포트 LLM 호출 때문에 세션 �
 - **점검**: `ArchitectureTest` 통과, `scripts/core-diff-check` 코어 diff 0(구조 증거일 뿐 C9·C10 합격 근거가 아니다). 문서 링크(README·SETUP·RELEASE-LIMITS·RETROSPECTIVE·n8n README) 깨짐 0.
 - **문구**: 실제 외부 왕복 스모크 확인, C9 부분 검증, C10 일부 미달·나머지 미검증. '10개 AC 충족'·'하드웨어 6행 검증'은 쓰지 않았다. `main` 병합·태그(v0.6.0)는 하지 않았다(사용자 요청 시에만).
 
+**후속 10(기동 0회, 문서만): README 아키텍처 이미지 (2026-10-22)**
+- **요청·변경**: 현재 구현 구조를 내장 `image_gen`으로 생성해 `docs/images/architecture.png`에 저장하고 README에 이미지·대체 텍스트·설명을 추가했다. 사용한 수정 프롬프트는 `docs/images/architecture-prompt.md`에 기록했다.
+- **근거·검토**: `compose.yaml`·`compose.monitoring.yaml`·Alloy 설정·RabbitMQ 발행/반응 소비 코드·아키텍처 문서·n8n 예제와 대조했다. Receiver→RabbitMQ→Worker와 독립 Reactor 분기, Postgres 처리 상태·선택 pgvector, 호스트 Ollama, 로그 파일→Alloy→Loki와 앱 직접 스크레이프→Prometheus→Grafana, 알람 직접 수신과 선택 n8n 경유를 표시했다. 최초 생성본의 잘못된 연결을 수정하고 선 표기를 정리했다.
+- **검증 범위**: 이미지 육안 검토, PNG 파일 형식·크기 확인, README 상대 링크와 staged diff·공개 정보 점검. 앱 코드·구조 변경·컨테이너 기동·실제 Slack 호출·성능 실험은 없으며 기존 C9·C10 판정과 미검증 항목은 그대로다.
+
