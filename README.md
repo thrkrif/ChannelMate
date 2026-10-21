@@ -4,6 +4,14 @@ Slack 멘션에 로컬 LLM(Ollama)이 스레드로 답하는 셀프호스트 봇
 
 **현재 `v0.6.0`(6단계까지 완료, 검증 범위는 [RELEASE-LIMITS](docs/RELEASE-LIMITS.md) 참고).** Slack 멘션 → 수신 API → RabbitMQ → 워커(Ollama, 선택적 RAG) → 스레드 답글. 같은 워커가 CloudWatch(SNS) 형식 알람도 받아 리포트를 올린다. 선택 기능(RAG·알람·요청 분류)은 `.env`로 켠다.
 
+## 아키텍처
+
+![slack-lab 현재 아키텍처: Slack 이벤트를 Receiver가 RabbitMQ에 발행하고 Worker가 Postgres 처리 상태와 호스트 Ollama를 사용해 답변한다. Reactor는 별도 반응 큐를 소비한다. 선택형 RAG, Alloy·Loki 로그 수집, Prometheus 지표 수집, Grafana 알람과 n8n 중계를 포함한다.](docs/images/architecture.png)
+
+실선은 데이터 흐름, 점선은 선택 경로다. Slack replies와 Slack reactions는 같은 Slack의 출력이며, 두 Grafana 표시는 같은 서비스다. RAG·알람·모니터링은 선택 기능이고 n8n은 알람 중계 예제다. Prometheus는 앱 관리 서버를 직접 스크레이프하고 Alloy는 로그 파일을 수집한다. 큐 저장 확인 후 수신 ACK, 처리 상태 저장 후 큐 ACK 순서를 지키며 전송 결과 불명은 자동 재발신하지 않는다.
+
+세부 설계는 [ARCHITECTURE](.claude/docs/ARCHITECTURE.md), 실제 검증 범위는 [RELEASE-LIMITS](docs/RELEASE-LIMITS.md)를 참고한다. 이미지 생성 프롬프트는 [architecture-prompt.md](docs/images/architecture-prompt.md)에 기록했다.
+
 ## 하드웨어 요구사항 (6단계 실측 — 일부 미달·미측정)
 
 켜는 기능에 따라 필요한 자원이 크게 다르다. **AI와 모니터링을 모두 끄면 가장 가볍고**, 모니터링은 선택 프로필(`compose.monitoring.yaml`)이라 켜지 않으면 컨테이너 4개가 아예 뜨지 않는다. 칸마다 근거를 구분한다.
